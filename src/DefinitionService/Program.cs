@@ -6,7 +6,7 @@ using ProcessChecker.Contracts;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddDbContext<DefinitionDb>(o =>
-    o.UseSqlServer(builder.Configuration.GetConnectionString("Default")));
+   o.UseOracle(builder.Configuration.GetConnectionString("Default")));
 builder.Services.AddScoped<DefinitionValidator>();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
