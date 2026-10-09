@@ -39,6 +39,7 @@ public class TriggerDefinition
     public string Type { get; set; } = TriggerTypes.Manual;
     public string? Connection { get; set; }        // named connection (DatabasePoll)
     public string? Query { get; set; }             // SQL that returns new entries
+    public string? KeyColumn { get; set; }
     public int EveryMinutes { get; set; } = 5;
 }
 
