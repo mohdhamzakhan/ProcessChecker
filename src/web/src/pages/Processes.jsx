@@ -37,7 +37,9 @@ export default function Processes() {
         api.get("/api/definitions")
             .then((d) => { setList(d); setError(null); })
             .catch((e) => { setList([]); setError(e); });
-    useEffect(() => { load(); }, []);
+    useEffect(() => {
+        load();
+    }, []);
 
     const start = async () => {
         try {

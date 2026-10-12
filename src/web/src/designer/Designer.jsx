@@ -1,11 +1,13 @@
 ﻿import { Fragment, useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api";
 import { ErrorBox } from "../ui";
+import Icon from "./Icon";
 import { DropZone, STEP_MIME, endDrag, startDrag } from "./dnd";
 import { ProcessProps, StepProps } from "./Props";
 import {
-    STEP_ORDER, STEP_TYPES, allIssues, blankState, fromDefinition, newStep, stepIssues, toDefinition, uid, unique,
+    STEP_GROUPS, STEP_ORDER, STEP_TYPES, allIssues, blankState, fromDefinition, newStep,
+    slugKey, stepIssues, toDefinition, uid, unique,
 } from "./model";
 import "./designer.css";
 
@@ -21,8 +23,34 @@ function summary(st) {
     }
 }
 
+function Connector({ at, menuAt, setMenuAt, onDropStep, onAdd }) {
+    const open = menuAt === at;
+    return (
+        <DropZone mime={STEP_MIME} label="Drop here" onDrop={(p) => onDropStep(p, at)}>
+            <button type="button" className={`plus${open ? " open" : ""}`} title="Insert a step here"
+                onClick={(e) => { e.stopPropagation(); setMenuAt(open ? null : at); }}>
+                <Icon name="plus" size={14} stroke={2.5} />
+            </button>
+            {open && (
+                <div className="addmenu" onClick={(e) => e.stopPropagation()}>
+                    {STEP_ORDER.map((type) => {
+                        const m = STEP_TYPES[type];
+                        return (
+                            <button key={type} type="button" style={{ "--c": m.color }}
+                                onClick={() => { onAdd(type, at); setMenuAt(null); }}>
+                                <span className="pbadge"><Icon name={m.icon} size={16} /></span>{m.label}
+                            </button>
+                        );
+                    })}
+                </div>
+            )}
+        </DropZone>
+    );
+}
+
 export default function Designer() {
     const { key: routeKey } = useParams();
+    const nav = useNavigate();
     const [state, setState] = useState(blankState);
     const [version, setVersion] = useState(null);
     const [selected, setSelected] = useState("process");
@@ -31,7 +59,9 @@ export default function Designer() {
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState(null);
     const [msg, setMsg] = useState("");
-    const [showJson, setShowJson] = useState(false);
+    const [panel, setPanel] = useState(null);       // "issues" | "json" | null
+    const [menuAt, setMenuAt] = useState(null);
+    const [q, setQ] = useState("");
     const [connections, setConnections] = useState([]);
 
     useEffect(() => {
@@ -39,9 +69,10 @@ export default function Designer() {
     }, []);
 
     useEffect(() => {
-        setError(null); setMsg(""); setSelected("process");
+        setError(null); setMsg(""); setSelected("process"); setPanel(null);
         if (!routeKey) { setState(blankState()); setVersion(null); setDirty(false); setLoading(false); return; }
         setLoading(true);
+
         api.get(`/api/definitions/${encodeURIComponent(routeKey)}`)
             .then((r) => { setState(fromDefinition(r.definition)); setVersion(r.version); setDirty(false); })
             .catch(setError)
@@ -49,9 +80,18 @@ export default function Designer() {
     }, [routeKey]);
 
     useEffect(() => {
+        const close = () => setMenuAt(null);
+        const esc = (e) => { if (e.key === "Escape") { setMenuAt(null); setPanel(null); } };
         window.addEventListener("dragend", endDrag);
         window.addEventListener("drop", endDrag, true);
-        return () => { window.removeEventListener("dragend", endDrag); window.removeEventListener("drop", endDrag, true); };
+        document.addEventListener("click", close);
+        document.addEventListener("keydown", esc);
+        return () => {
+            window.removeEventListener("dragend", endDrag);
+            window.removeEventListener("drop", endDrag, true);
+            document.removeEventListener("click", close);
+            document.removeEventListener("keydown", esc);
+        };
     }, []);
 
     useEffect(() => {
@@ -66,7 +106,7 @@ export default function Designer() {
     const stepIndex = state.steps.findIndex((s) => s.uid === selected);
     const selectedStep = stepIndex >= 0 ? state.steps[stepIndex] : null;
 
-    // ------------------------------------------------ canvas actions
+    // ---------------------------------------------------------- canvas actions
     const addStep = (type, at) => {
         const st = newStep(type, state.steps);
         change((s) => {
@@ -124,10 +164,12 @@ export default function Designer() {
 
     const onDropStep = (p, at) => (p.kind === "new" ? addStep(p.type, at) : moveStep(p.uid, at));
 
+    // ---------------------------------------------------------- saving
     const save = async () => {
         if (issues.length) return;
         setBusy(true); setError(null); setMsg("");
         try {
+
             const res = await api.post("/api/definitions", toDefinition(state));
             setVersion(res.version);
             setDirty(false);
@@ -136,109 +178,195 @@ export default function Designer() {
         } catch (e) { setError(e); } finally { setBusy(false); }
     };
 
-    if (loading) return <p className="muted">Loading...</p>;
+    const saveCopy = async () => {
+        if (issues.length) { setPanel("issues"); return; }
+        const k = prompt("Key for the new process (letters, numbers, -):", `${state.key}-copy`);
+        if (!k) return;
+        const key = slugKey(k);
+        if (!key) { alert("That key is not valid."); return; }
+
+        setBusy(true); setError(null); setMsg("");
+        try {
+            try {
+                await api.get(`/api/definitions/${encodeURIComponent(key)}`);
+                alert(`A process with the key "${key}" already exists. Choose another key.`);
+                return;
+            } catch (e) { if (e.status !== 404) throw e; }
+
+            await api.post("/api/definitions", { ...toDefinition(state), key, name: `${state.name.trim()} (copy)` });
+            setDirty(false);
+            nav(`/designer/${key}`);
+        } catch (e) { setError(e); } finally { setBusy(false); }
+    };
+
+    if (loading) return <p className="muted" style={{ padding: 24 }}>Loading...</p>;
 
     const t = state.trigger;
     const startText = t.type === "DatabasePoll"
         ? `Checks ${t.connection || "a database"} every ${t.everyMinutes || "?"} min`
         : "Started by a person";
+    const ql = q.trim().toLowerCase();
 
     return (
-        <>
-            <div className="dbar">
-                <Link to="/processes" className="back">← Processes</Link>
-                <div className="dtitle">
-                    <b>{state.name || "Untitled"}</b> <code>{state.key}</code>
-                    {version ? <span className="badge Completed">v{version}</span> : <span className="badge">Not saved yet</span>}
-                    {dirty && <span className="badge Running">Unsaved changes</span>}
+        <div className="dwrap">
+            {/* ---------------------------------------------------------- toolbar */}
+            <div className="dtop">
+                <Link to="/processes" className="iconbtn" title="Back to processes"><Icon name="back" size={18} /></Link>
+
+                <div className="titlebox">
+                    <input className="title-input" aria-label="Process name" placeholder="Process name"
+                        value={state.name}
+                        onChange={(e) => {
+                            const name = e.target.value;
+                            change((s) => ({ ...s, name, key: s.isNew && !s.keyTouched ? slugKey(name) : s.key }));
+                        }} />
+                    <Icon name="pencil" size={14} />
                 </div>
-                <div className="actions">
-                    <button className="secondary" onClick={() => setShowJson((v) => !v)}>{showJson ? "Hide JSON" : "Show JSON"}</button>
-                    <button disabled={busy || issues.length > 0} onClick={save}
-                        title={issues.length ? "Fix the listed problems first" : "Save this process"}>
-                        {busy ? "Saving..." : "Save"}
+
+                <code className="keychip" title={state.isNew ? "The key is set on the Start panel" : "The key cannot change after the first save"}>
+                    {!state.isNew && <Icon name="lock" size={11} />}{state.key || "key"}
+                </code>
+                {version ? <span className="badge Completed">v{version}</span> : <span className="badge">Draft</span>}
+                {dirty && <span className="badge Running">Unsaved</span>}
+
+                <div className="dspacer" />
+
+                <button type="button" className={`pill ${issues.length ? "warn" : "ok"}`}
+                    onClick={(e) => { e.stopPropagation(); setPanel(panel === "issues" ? null : "issues"); }}>
+                    <Icon name={issues.length ? "alert" : "check"} size={14} />
+                    {issues.length ? `${issues.length} to fix` : "All good"}
+                </button>
+                <button className="secondary" onClick={() => setPanel(panel === "json" ? null : "json")}>
+                    <Icon name="code" size={15} />JSON
+                </button>
+                {!state.isNew && (
+                    <button className="secondary" disabled={busy} onClick={saveCopy}>
+                        <Icon name="copy" size={15} />Save as copy
                     </button>
-                </div>
+                )}
+                <button disabled={busy || issues.length > 0} onClick={save}
+                    title={issues.length ? "Fix the listed problems first" : "Save this process"}>
+                    <Icon name="save" size={15} />{busy ? "Saving..." : "Save"}
+                </button>
             </div>
 
-            <ErrorBox error={error} />
+            {error && <div className="dmsg"><ErrorBox error={error} /></div>}
             {msg && <div className="okbar">{msg}</div>}
-            {issues.length > 0 && (
-                <details className="issues">
-                    <summary>{issues.length} thing{issues.length === 1 ? "" : "s"} to fix before you can save</summary>
+
+            {panel === "issues" && (
+                <div className="popover" onClick={(e) => e.stopPropagation()}>
+                    <b>{issues.length ? "Fix these before saving" : "No problems found"}</b>
                     <ul>
                         {issues.map((i, n) => (
-                            <li key={n}><button className="link" onClick={() => setSelected(i.scope)}>{i.text}</button></li>
+                            <li key={n}>
+                                <button className="link" onClick={() => { setSelected(i.scope); setPanel(null); }}>{i.text}</button>
+                            </li>
                         ))}
                     </ul>
-                </details>
+                </div>
             )}
-            {showJson && <pre>{JSON.stringify(toDefinition(state), null, 2)}</pre>}
+            {panel === "json" && (
+                <div className="popover wide" onClick={(e) => e.stopPropagation()}>
+                    <b>Generated definition</b>
+                    <pre>{JSON.stringify(toDefinition(state), null, 2)}</pre>
+                </div>
+            )}
 
-            <div className="designer">
-                {/* ---------------- palette ---------------- */}
-                <aside className="dpanel palette">
-                    <h4>Steps</h4>
-                    <p className="muted small">Drag onto the canvas, or click to add at the end.</p>
-                    {STEP_ORDER.map((type) => {
-                        const m = STEP_TYPES[type];
+            {/* ---------------------------------------------------------- body */}
+            <div className="dbody">
+                <aside className="pane palette">
+                    <div className="psearch">
+                        <Icon name="search" size={15} />
+                        <input placeholder="Search steps" value={q} onChange={(e) => setQ(e.target.value)} />
+                    </div>
+                    <p className="muted small">Drag a step onto the canvas, or click one to add it at the end.</p>
+
+                    {STEP_GROUPS.map((g) => {
+                        const items = g.types.filter((type) =>
+                            !ql || STEP_TYPES[type].label.toLowerCase().includes(ql) || STEP_TYPES[type].hint.toLowerCase().includes(ql));
+                        if (!items.length) return null;
                         return (
-                            <div key={type} className="pitem" style={{ "--c": m.color }} draggable
-                                onDragStart={(e) => startDrag(e, STEP_MIME, { kind: "new", type })}
-                                onDragEnd={endDrag}
-                                onClick={() => addStep(type)}>
-                                <span className="picon">{m.icon}</span>
-                                <div><b>{m.label}</b><small>{m.hint}</small></div>
+                            <div key={g.label}>
+                                <div className="plabel">{g.label}</div>
+                                {items.map((type) => {
+                                    const m = STEP_TYPES[type];
+                                    return (
+                                        <div key={type} className="pitem" style={{ "--c": m.color }} draggable
+                                            onDragStart={(e) => startDrag(e, STEP_MIME, { kind: "new", type })}
+                                            onDragEnd={endDrag}
+                                            onClick={() => addStep(type)}>
+                                            <span className="pbadge"><Icon name={m.icon} size={18} /></span>
+                                            <div><b>{m.label}</b><small>{m.hint}</small></div>
+                                            <Icon name="grip" size={14} className="grip" />
+                                        </div>
+                                    );
+                                })}
                             </div>
                         );
                     })}
                 </aside>
 
-                {/* ---------------- canvas ---------------- */}
-                <section className="canvas">
-                    <div className={`node start${selected === "process" ? " sel" : ""}`} onClick={() => setSelected("process")}>
-                        ▶ Start
-                        <small>{startText}</small>
+                <section className="pane canvas">
+                    <div className="flow">
+                        <div className={`node start${selected === "process" ? " sel" : ""}`} onClick={() => setSelected("process")}>
+                            <span className="nbadge"><Icon name="play" size={15} /></span>
+                            <div><b>Start</b><small>{startText}</small></div>
+                        </div>
+
+                        {state.steps.length === 0 ? (
+                            <>
+                                <div className="line" />
+                                <DropZone big mime={STEP_MIME} onDrop={(p) => onDropStep(p, 0)}>
+                                    <div className="empty-flow">
+                                        <Icon name="workflow" size={30} />
+                                        <b>Start building your process</b>
+                                        <span>Drag a step here from the left, or click one to add it.</span>
+                                    </div>
+                                </DropZone>
+                            </>
+                        ) : (
+                            <>
+                                {state.steps.map((st, i) => {
+                                    const m = STEP_TYPES[st.type];
+                                    const bad = stepIssues(st, state.steps).length > 0;
+                                    return (
+                                        <Fragment key={st.uid}>
+                                            <Connector at={i} menuAt={menuAt} setMenuAt={setMenuAt} onDropStep={onDropStep} onAdd={addStep} />
+                                            <div className={`scard${selected === st.uid ? " sel" : ""}${bad ? " bad" : ""}`}
+                                                style={{ "--c": m.color }} draggable
+                                                onDragStart={(e) => startDrag(e, STEP_MIME, { kind: "move", uid: st.uid })}
+                                                onDragEnd={endDrag}
+                                                onClick={() => setSelected(st.uid)}>
+                                                <Icon name="grip" size={16} className="grip" />
+                                                <span className="sbadge"><Icon name={m.icon} size={20} /></span>
+                                                <div className="smain">
+                                                    <div className="skind">Step {i + 1} · {m.label}</div>
+                                                    <div className="stitle">{st.name || "(unnamed)"}</div>
+                                                    <div className="ssub">{summary(st)}</div>
+                                                </div>
+                                                {bad && <span className="needs" title="This step needs attention"><Icon name="alert" size={13} /></span>}
+                                                <div className="sbtns" onClick={(e) => e.stopPropagation()}>
+                                                    <button className="icon" title="Move up" disabled={i === 0} onClick={() => shift(st.uid, -1)}><Icon name="up" size={15} /></button>
+                                                    <button className="icon" title="Move down" disabled={i === state.steps.length - 1} onClick={() => shift(st.uid, 1)}><Icon name="down" size={15} /></button>
+                                                    <button className="icon" title="Duplicate" onClick={() => duplicate(st.uid)}><Icon name="copy" size={15} /></button>
+                                                    <button className="icon danger" title="Remove" onClick={() => remove(st.uid)}><Icon name="trash" size={15} /></button>
+                                                </div>
+                                            </div>
+                                        </Fragment>
+                                    );
+                                })}
+                                <Connector at={state.steps.length} menuAt={menuAt} setMenuAt={setMenuAt} onDropStep={onDropStep} onAdd={addStep} />
+                            </>
+                        )}
+
+                        <div className="node end">
+                            <span className="nbadge"><Icon name="stop" size={14} /></span>
+                            <div><b>End</b><small>The request is completed</small></div>
+                        </div>
                     </div>
-
-                    {state.steps.length === 0 ? (
-                        <DropZone big mime={STEP_MIME} label="Drop your first step here" onDrop={(p) => onDropStep(p, 0)} />
-                    ) : (
-                        <>
-                            {state.steps.map((st, i) => {
-                                const m = STEP_TYPES[st.type];
-                                const bad = stepIssues(st, state.steps).length > 0;
-                                return (
-                                    <Fragment key={st.uid}>
-                                        <DropZone mime={STEP_MIME} label="Move here" onDrop={(p) => onDropStep(p, i)} />
-                                        <div className={`scard${selected === st.uid ? " sel" : ""}`} style={{ "--c": m.color }} draggable
-                                            onDragStart={(e) => startDrag(e, STEP_MIME, { kind: "move", uid: st.uid })}
-                                            onDragEnd={endDrag}
-                                            onClick={() => setSelected(st.uid)}>
-                                            <span className="sicon">{m.icon}</span>
-                                            <div className="smain">
-                                                <div className="stitle">{i + 1}. {st.name || "(unnamed)"} {bad && <span className="warn-dot" title="Needs attention" />}</div>
-                                                <div className="ssub">{m.label} · {summary(st)}</div>
-                                            </div>
-                                            <div className="sbtns" onClick={(e) => e.stopPropagation()}>
-                                                <button className="icon" title="Move up" disabled={i === 0} onClick={() => shift(st.uid, -1)}>↑</button>
-                                                <button className="icon" title="Move down" disabled={i === state.steps.length - 1} onClick={() => shift(st.uid, 1)}>↓</button>
-                                                <button className="icon" title="Duplicate" onClick={() => duplicate(st.uid)}>⧉</button>
-                                                <button className="icon" title="Remove" onClick={() => remove(st.uid)}>🗑</button>
-                                            </div>
-                                        </div>
-                                    </Fragment>
-                                );
-                            })}
-                            <DropZone mime={STEP_MIME} label="Add at the end" onDrop={(p) => onDropStep(p, state.steps.length)} />
-                        </>
-                    )}
-
-                    <div className="node end">■ End</div>
                 </section>
 
-                {/* ---------------- properties ---------------- */}
-                <aside className="dpanel props">
+                <aside className="pane props">
                     {selectedStep ? (
                         <StepProps key={selectedStep.uid} step={selectedStep} index={stepIndex} state={state}
                             change={change} connections={connections} />
@@ -247,6 +375,6 @@ export default function Designer() {
                     )}
                 </aside>
             </div>
-        </>
+        </div>
     );
 }

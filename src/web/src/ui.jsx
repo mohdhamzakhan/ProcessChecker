@@ -1,6 +1,7 @@
 ﻿import { useState } from "react";
 import { Link } from "react-router-dom";
 import { downloadFile } from "./api";
+import Icon from "./designer/Icon";
 
 export const fmt = (d) => (d ? new Date(d).toLocaleString() : "");
 
@@ -22,7 +23,13 @@ export function ErrorBox({ error }) {
 
 /** The step-by-step progress: each step shown as completed / in progress / pending */
 export function Stepper({ steps }) {
-    const icon = { Completed: "✓", InProgress: "…", Failed: "!", Rejected: "✕", Pending: "" };
+    const icon = {
+        Completed: <Icon name="check" size={16} stroke={3} />,
+        Failed: <Icon name="x" size={16} stroke={3} />,
+        Rejected: <Icon name="x" size={16} stroke={3} />,
+        InProgress: <Icon name="play" size={12} />,
+        Pending: null,
+    };
     return (
         <div className="stepper">
             {steps.map((s, i) => (

@@ -1,22 +1,31 @@
 ﻿export const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 
 export const STEP_TYPES = {
-    Form: { label: "Form", icon: "📝", color: "#2563eb", hint: "Collect details from a person" },
-    Approval: { label: "Approval", icon: "✅", color: "#16a34a", hint: "Email approvers and wait" },
-    Dispatch: { label: "Send to supplier", icon: "📤", color: "#9333ea", hint: "Email the collected data" },
-    Upload: { label: "Upload file", icon: "📎", color: "#d97706", hint: "Person uploads a confirmation" },
-    DataFetch: { label: "Fetch data", icon: "🗄️", color: "#0891b2", hint: "Read rows from a database" },
-    Notify: { label: "Notify", icon: "🔔", color: "#e11d48", hint: "Send an email notice" },
+    Form: { label: "Form", icon: "form", color: "#2563eb", hint: "Collect details from a person" },
+    Approval: { label: "Approval", icon: "approval", color: "#059669", hint: "Email approvers and wait" },
+    Dispatch: { label: "Send to supplier", icon: "send", color: "#7c3aed", hint: "Email the collected data" },
+    Upload: { label: "Upload file", icon: "upload", color: "#d97706", hint: "Person uploads a confirmation" },
+    DataFetch: { label: "Fetch data", icon: "database", color: "#0891b2", hint: "Read rows from a database" },
+    Notify: { label: "Notify", icon: "bell", color: "#e11d48", hint: "Send an email notice" },
 };
+
 export const STEP_ORDER = ["Form", "Approval", "Dispatch", "Upload", "DataFetch", "Notify"];
 
+export const STEP_GROUPS = [
+    { label: "Collect", types: ["Form", "Upload"] },
+    { label: "Decide", types: ["Approval"] },
+    { label: "Communicate", types: ["Dispatch", "Notify"] },
+    { label: "Data", types: ["DataFetch"] },
+];
+
+
 export const FIELD_TYPES = {
-    text: { label: "Text", icon: "Aa" },
-    textarea: { label: "Text area", icon: "¶" },
-    number: { label: "Number", icon: "#" },
-    date: { label: "Date", icon: "📅" },
-    select: { label: "Dropdown", icon: "▾" },
-    checkbox: { label: "Checkbox", icon: "☑" },
+    text: { label: "Text", icon: "type" },
+    textarea: { label: "Text area", icon: "align" },
+    number: { label: "Number", icon: "hash" },
+    date: { label: "Date", icon: "calendar" },
+    select: { label: "Dropdown", icon: "dropdown" },
+    checkbox: { label: "Checkbox", icon: "checksq" },
 };
 export const FIELD_ORDER = ["text", "textarea", "number", "date", "select", "checkbox"];
 

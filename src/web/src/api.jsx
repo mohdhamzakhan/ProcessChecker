@@ -15,8 +15,10 @@ async function handle(res) {
         }
         const fallback =
             res.status === 403 ? "You do not have permission to do this."
-                : res.status === 429 ? "Too many attempts. Wait a minute and try again."
-                    : `Request failed (${res.status})`;
+                : res.status === 404 ? "Not found. The gateway has no route for this call, or the item does not exist."
+                    : res.status === 429 ? "Too many attempts. Wait a minute and try again."
+                        : [502, 503, 504].includes(res.status) ? "A backend service is not running or not reachable. Check the service windows."
+                            : `Request failed (${res.status})`;
         const err = new Error(data?.error || fallback);
         err.errors = Array.isArray(data?.errors) ? data.errors : [];
         err.status = res.status;

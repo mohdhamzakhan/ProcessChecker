@@ -13,8 +13,7 @@ export const endDrag = () => document.body.classList.remove("dnd-step", "dnd-fie
 
 const accepts = (e, mime) => Array.from(e.dataTransfer.types || []).includes(mime);
 
-/** A thin strip between items. It grows while you drag so it is easy to hit. */
-export function DropZone({ mime, onDrop, label = "Drop here", big = false }) {
+export function DropZone({ mime, onDrop, label = "Drop here", big = false, children }) {
     const [over, setOver] = useState(false);
     return (
         <div
@@ -35,7 +34,8 @@ export function DropZone({ mime, onDrop, label = "Drop here", big = false }) {
                 try { onDrop(JSON.parse(e.dataTransfer.getData(mime))); } catch { /* ignore */ }
             }}
         >
-            <span>{over || big ? label : ""}</span>
+            {children}
+            {over && !big && <span className="dz-label">{label}</span>}
         </div>
     );
 }

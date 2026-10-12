@@ -5,6 +5,7 @@ import {
     FIELD_ORDER, FIELD_TYPES, STEP_TYPES, availableFields, isEmail, isPlaceholder,
     newField, slugKey, slugName, unique,
 } from "./model";
+import Icon from "./Icon";
 
 const queryHint = (type) =>
     type === "Json" ? "JSONPath, for example $.requests[?(@.status=='new')]"
@@ -229,7 +230,7 @@ function FieldBuilder({ fields, onChange }) {
                         onDragEnd={endDrag}
                         onClick={() => insertAt(t, fields.length)}
                         onKeyDown={(e) => e.key === "Enter" && insertAt(t, fields.length)}>
-                        <span>{FIELD_TYPES[t].icon}</span>{FIELD_TYPES[t].label}
+                        <Icon name={FIELD_TYPES[t].icon} size={18} />{FIELD_TYPES[t].label}
                     </div>
                 ))}
             </div>
@@ -244,12 +245,12 @@ function FieldBuilder({ fields, onChange }) {
                                 onDragStart={(e) => startDrag(e, FIELD_MIME, { kind: "move", uid: f.uid })}
                                 onDragEnd={endDrag}
                                 onClick={() => setOpen(open === f.uid ? null : f.uid)}>
-                                <span className="grip">⠿</span>
-                                <span className="ficon">{FIELD_TYPES[f.type].icon}</span>
+                                <Icon name="grip" size={14} className="grip" />
+                                <span className="ficon"><Icon name={FIELD_TYPES[f.type].icon} size={15} /></span>
                                 <span className="flabel">{f.label || "(no label)"}{f.required && " *"}</span>
                                 <small>{FIELD_TYPES[f.type].label}</small>
                                 <button type="button" className="icon" title="Remove"
-                                    onClick={(e) => { e.stopPropagation(); onChange(fields.filter((x) => x.uid !== f.uid)); }}>🗑</button>
+                                    onClick={(e) => { e.stopPropagation(); onChange(fields.filter((x) => x.uid !== f.uid)); }}><Icon name="trash" size={15} /></button>
                             </div>
                             {open === f.uid && (
                                 <div className="fbody">
@@ -290,7 +291,10 @@ export function ProcessProps({ state, change, connections }) {
 
     return (
         <div>
-            <h4>Process</h4>
+            <div className="phead" style={{ "--c": "#16a34a" }}>
+                <span className="badge-ico"><Icon name="play" size={18} /></span>
+                <div><small>Process</small><b>Settings and start trigger</b></div>
+            </div>
             <div className="form">
                 <label><span>Name</span>
                     <input value={state.name}
@@ -360,7 +364,10 @@ export function StepProps({ step, index, state, change, connections }) {
 
     return (
         <div>
-            <h4><span style={{ color: meta.color }}>{meta.icon}</span> {meta.label}</h4>
+            <div className="phead" style={{ "--c": meta.color }}>
+                <span className="badge-ico"><Icon name={meta.icon} size={18} /></span>
+                <div><small>{meta.label}</small><b>{step.name || "Untitled step"}</b></div>
+            </div>
             <div className="form">
                 <label><span>Step name</span>
                     <input value={step.name} onChange={(e) => patch({ name: e.target.value })} /></label>
