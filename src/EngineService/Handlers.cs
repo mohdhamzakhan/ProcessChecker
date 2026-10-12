@@ -314,10 +314,16 @@ public class DataFetchHandler : IStepHandler
             ps[n] = v.Value;
         }
 
+        var rawSchema = ctx.Def.Schema?.Trim() ?? "";
+        var schema = ctx.Data.Render(rawSchema).Trim();
+        if (rawSchema.Length > 0 && schema.Length == 0)
+            return StepResult.Fail($"Schema '{rawSchema}' has no value in the process data.");
+
         QueryOutput res;
         try
         {
-            res = await _conn.QueryAsync(ctx.Def.Connection!, query, ps.Count > 0 ? ps : null, 200, ct);
+            res = await _conn.QueryAsync(ctx.Def.Connection!, query, ps.Count > 0 ? ps : null, 200,
+                schema.Length > 0 ? schema : null, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

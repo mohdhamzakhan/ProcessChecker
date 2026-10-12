@@ -6,6 +6,8 @@ namespace DefinitionService;
 public class DefinitionValidator
 {
     private static readonly Regex KeyRegex = new("^[a-z0-9-]+$", RegexOptions.Compiled);
+    private static readonly Regex SchemaRegex = new(@"^[A-Za-z][A-Za-z0-9_$#]{0,127}$", RegexOptions.Compiled);
+    private static readonly Regex PlaceholderRegex = new(@"^\{\{\s*[\w.\-]+\s*\}\}$", RegexOptions.Compiled);
 
     public List<string> Validate(ProcessDefinitionDto d)
     {
@@ -15,6 +17,8 @@ public class DefinitionValidator
             errors.Add("Key is required and may only contain a-z, 0-9 and '-'.");
         if (string.IsNullOrWhiteSpace(d.Name))
             errors.Add("Name is required.");
+
+
 
         // Trigger
         if (d.Trigger.Type == TriggerTypes.DatabasePoll)
@@ -54,6 +58,12 @@ public class DefinitionValidator
                 continue;
             }
 
+            // inside the "if (d.Trigger.Type == TriggerTypes.DatabasePoll)" block:
+            if (CheckSchema(d.Trigger.Schema, false) is { } te) errors.Add("Trigger: " + te);
+
+            // inside "case StepTypes.DataFetch:", after the existing checks:
+            if (CheckSchema(s.Schema, true) is { } se) errors.Add($"{p}: {se}");
+
             switch (s.Type)
             {
                 case StepTypes.Approval:
@@ -89,6 +99,15 @@ public class DefinitionValidator
         return errors;
     }
 
+    private static string? CheckSchema(string? schema, bool allowPlaceholder)
+    {
+        if (string.IsNullOrWhiteSpace(schema)) return null;
+        var s = schema.Trim();
+        if (SchemaRegex.IsMatch(s)) return null;
+        if (allowPlaceholder && PlaceholderRegex.IsMatch(s)) return null;
+        return "schema '" + s + "' is not valid (letters, numbers, _ $ #" +
+               (allowPlaceholder ? ", or a {{field}} placeholder" : "") + ").";
+    }
     private static void ValidateFields(StepDefinition s, string p, List<string> errors)
     {
         if (s.Fields.Count == 0)

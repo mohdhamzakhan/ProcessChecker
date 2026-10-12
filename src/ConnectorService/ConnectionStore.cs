@@ -64,6 +64,19 @@ public class ConnectionStore
                     errors.Add($"FilePath must be inside one of: {string.Join(", ", _roots)}");
             }
         }
+
+        var schemaCapable = r.Type is ConnectionTypes.Oracle or ConnectionTypes.PostgreSql;
+        var names = (r.AllowedSchemas ?? Array.Empty<string>())
+            .Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
+        var def = r.DefaultSchema?.Trim() ?? "";
+
+        if ((names.Count > 0 || def.Length > 0) && !schemaCapable)
+            errors.Add("Schemas are supported only for Oracle and PostgreSQL connections.");
+        foreach (var n in names.Append(def).Where(x => x.Length > 0))
+            if (!SchemaResolver.NameRegex.IsMatch(n)) errors.Add($"'{n}' is not a valid schema name.");
+        if (names.Count > 0 && def.Length > 0 && !names.Contains(def, StringComparer.OrdinalIgnoreCase))
+            errors.Add("DefaultSchema must be one of AllowedSchemas.");
+
         return errors;
     }
 
@@ -83,9 +96,10 @@ public class ConnectionStore
         new(r.Name, r.Type, r.ConnectionString, r.FilePath, r.Options ?? new FileSourceOptions());
 
     public ConnectionInfo ToInfo(ConnectionEntity e) => new(
-        e.Id, e.Name, e.Type, e.FilePath,
-        string.IsNullOrEmpty(e.OptionsJson) ? null : JsonSerializer.Deserialize<FileSourceOptions>(e.OptionsJson, J),
-        e.Description, e.IsActive, !string.IsNullOrEmpty(e.ProtectedConnectionString), e.CreatedAt);
+     e.Id, e.Name, e.Type, e.FilePath,
+     string.IsNullOrEmpty(e.OptionsJson) ? null : JsonSerializer.Deserialize<FileSourceOptions>(e.OptionsJson, J),
+     e.Description, e.IsActive, !string.IsNullOrEmpty(e.ProtectedConnectionString), e.CreatedAt,
+     e.DefaultSchema, SchemaResolver.Split(e.AllowedSchemas));
 
     public async Task<ConnectionEntity> CreateAsync(ConnectionRequest r)
     {
@@ -121,6 +135,10 @@ public class ConnectionStore
         e.Description = r.Description;
         e.IsActive = r.IsActive ?? true;
         e.OptionsJson = r.Options is null ? null : JsonSerializer.Serialize(r.Options, J);
+        e.DefaultSchema = string.IsNullOrWhiteSpace(r.DefaultSchema) ? null : r.DefaultSchema.Trim();
+        var allowed = string.Join(",", (r.AllowedSchemas ?? Array.Empty<string>())
+            .Select(x => x.Trim()).Where(x => x.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase));
+        e.AllowedSchemas = allowed.Length == 0 ? null : allowed;
 
         if (!string.IsNullOrWhiteSpace(r.ConnectionString))
             e.ProtectedConnectionString = _protector.Protect(r.ConnectionString);

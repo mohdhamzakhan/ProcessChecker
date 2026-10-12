@@ -39,14 +39,14 @@ public class ConnectorClient
 
     public async Task<QueryOutput> QueryAsync(
         string connection, string query, Dictionary<string, JsonElement>? parameters,
-        int maxRows, CancellationToken ct)
+        int maxRows, string? schema, CancellationToken ct)
     {
         HttpResponseMessage res;
         try
         {
             res = await _http.PostAsJsonAsync(
                 $"api/connections/{Uri.EscapeDataString(connection)}/query",
-                new { query, parameters, maxRows }, J, ct);
+                new { query, parameters, maxRows, schema }, J, ct);
         }
         catch (HttpRequestException ex)
         {

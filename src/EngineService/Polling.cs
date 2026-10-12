@@ -33,7 +33,7 @@ public class PollingService
         try
         {
             res = await _conn.QueryAsync(t.Connection!, t.Query!, null,
-                _cfg.GetValue("Polling:MaxRowsPerPoll", 200), ct);
+                    _cfg.GetValue("Polling:MaxRowsPerPoll", 200), t.Schema, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

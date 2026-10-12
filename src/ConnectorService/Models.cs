@@ -35,19 +35,25 @@ public class ConnectionEntity
     public string? Description { get; set; }
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public string? DefaultSchema { get; set; }
+    public string? AllowedSchemas { get; set; }
 }
 
 public record ConnectionRequest(
     string Name, string Type, string? ConnectionString, string? FilePath,
-    FileSourceOptions? Options, string? Description, bool? IsActive);
+    FileSourceOptions? Options, string? Description, bool? IsActive,
+    string? DefaultSchema = null, string[]? AllowedSchemas = null);
 
 public record ConnectionInfo(
     Guid Id, string Name, string Type, string? FilePath, FileSourceOptions? Options,
-    string? Description, bool IsActive, bool HasSecret, DateTime CreatedAt);
+    string? Description, bool IsActive, bool HasSecret, DateTime CreatedAt,
+    string? DefaultSchema, List<string> AllowedSchemas);
 
 public record ResolvedConnection(
-    string Name, string Type, string? ConnectionString, string? FilePath, FileSourceOptions Options);
+    string Name, string Type, string? ConnectionString, string? FilePath,
+    FileSourceOptions Options, string? Schema = null);
 
-public record QueryRequest(string? Query, Dictionary<string, JsonElement>? Parameters, int? MaxRows);
+public record QueryRequest(
+    string? Query, Dictionary<string, JsonElement>? Parameters, int? MaxRows, string? Schema = null);
 
 public record TypeDescriptor(string Type, string Label, string Kind, string Example, string QueryHelp);

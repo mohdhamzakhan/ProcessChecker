@@ -5,16 +5,67 @@ using Oracle.ManagedDataAccess.Client;
 
 namespace ConnectorService.Connectors;
 
-public class OracleConnector : SqlConnectorBase
+public class OracleConnector : SchemaSqlConnector
 {
     public override string Type => ConnectionTypes.Oracle;
     protected override DbConnection Create(ResolvedConnection c) => new OracleConnection(c.ConnectionString);
     protected override string? TestSql => "SELECT 1 FROM DUAL";
     protected override string TablesSql =>
         "SELECT table_name FROM user_tables UNION SELECT view_name FROM user_views ORDER BY 1";
+
+    protected override string Marker => ":";
+    protected override string SchemasSql =>
+        "SELECT owner FROM (SELECT owner FROM all_tables UNION SELECT owner FROM all_views) " +
+        "WHERE owner NOT IN (SELECT username FROM all_users WHERE oracle_maintained = 'Y') ORDER BY owner";
+    protected override string SchemaTablesSql =>
+        "SELECT table_name FROM all_tables WHERE owner = {M}sch " +
+        "UNION SELECT view_name FROM all_views WHERE owner = {M}sch ORDER BY 1";
+    protected override string SchemaColumnsSql =>
+        "SELECT column_name, data_type, nullable FROM all_tab_columns " +
+        "WHERE owner = {M}sch AND table_name = {M}tbl ORDER BY column_id";
+
     protected override void Prepare(DbCommand cmd)
     {
-        if (cmd is OracleCommand o) o.BindByName = true;   // :name parameters
+        if (cmd is OracleCommand o) o.BindByName = true;
+    }
+
+    // Pooled connections remember session settings, so ALWAYS set the schema (or reset it to the login user)
+    protected override async Task ApplySchemaAsync(DbConnection conn, string? schema, CancellationToken ct)
+    {
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = schema is null
+            ? "BEGIN EXECUTE IMMEDIATE 'ALTER SESSION SET CURRENT_SCHEMA = ' || " +
+              "DBMS_ASSERT.ENQUOTE_NAME(SYS_CONTEXT('USERENV','SESSION_USER'), FALSE); END;"
+            : $"ALTER SESSION SET CURRENT_SCHEMA = {schema}";      // name already validated against the allow-list
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+}
+
+public class PostgreSqlConnector : SchemaSqlConnector
+{
+    public override string Type => ConnectionTypes.PostgreSql;
+    protected override DbConnection Create(ResolvedConnection c) => new Npgsql.NpgsqlConnection(c.ConnectionString);
+    protected override string? TestSql => "SELECT 1";
+    protected override string TablesSql =>
+        "SELECT table_schema || '.' || table_name FROM information_schema.tables " +
+        "WHERE table_schema NOT IN ('pg_catalog','information_schema') ORDER BY 1";
+
+    protected override string Marker => "@";
+    protected override string SchemasSql =>
+        "SELECT schema_name FROM information_schema.schemata " +
+        "WHERE schema_name <> 'information_schema' AND schema_name !~ '^pg_' ORDER BY 1";
+    protected override string SchemaTablesSql =>
+        "SELECT table_name FROM information_schema.tables WHERE table_schema = {M}sch ORDER BY 1";
+    protected override string SchemaColumnsSql =>
+        "SELECT column_name, data_type, is_nullable FROM information_schema.columns " +
+        "WHERE table_schema = {M}sch AND table_name = {M}tbl ORDER BY ordinal_position";
+
+    protected override async Task ApplySchemaAsync(DbConnection conn, string? schema, CancellationToken ct)
+    {
+        if (schema is null) return;                                  // Npgsql resets the pool session itself
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"SET search_path TO \"{schema}\"";
+        await cmd.ExecuteNonQueryAsync(ct);
     }
 }
 
@@ -38,16 +89,6 @@ public class MySqlConnectorImpl : SqlConnectorBase
         "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() ORDER BY 1";
 }
 
-public class PostgreSqlConnector : SqlConnectorBase
-{
-    public override string Type => ConnectionTypes.PostgreSql;
-    protected override DbConnection Create(ResolvedConnection c) =>
-        new Npgsql.NpgsqlConnection(c.ConnectionString);
-    protected override string? TestSql => "SELECT 1";
-    protected override string TablesSql =>
-        "SELECT table_schema || '.' || table_name FROM information_schema.tables " +
-        "WHERE table_schema NOT IN ('pg_catalog','information_schema') ORDER BY 1";
-}
 
 /// Windows only. Needs the "Microsoft Access Database Engine" (ACE) driver installed
 /// for the same bitness as the app (64-bit).

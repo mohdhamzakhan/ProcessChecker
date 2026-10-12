@@ -9,7 +9,8 @@ public abstract class SqlConnectorBase : IConnector
     protected abstract string? TestSql { get; }
     protected abstract string TablesSql { get; }
     protected virtual void Prepare(DbCommand cmd) { }
-
+    protected virtual Task ApplySchemaAsync(DbConnection conn, string? schema, CancellationToken ct) =>
+    Task.CompletedTask;
     protected virtual string BindParameters(
         DbCommand cmd, string query, IDictionary<string, object?>? p)
     {
@@ -30,6 +31,7 @@ public abstract class SqlConnectorBase : IConnector
         {
             await using var conn = Create(c);
             await conn.OpenAsync(ct);
+            await ApplySchemaAsync(conn, c.Schema, ct);
             if (TestSql != null)
             {
                 await using var cmd = conn.CreateCommand();

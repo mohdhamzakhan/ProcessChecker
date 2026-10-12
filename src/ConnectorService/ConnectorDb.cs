@@ -22,6 +22,8 @@ public class ConnectorDb : DbContext
             e.Property(x => x.FilePath).HasMaxLength(1000);
             e.Property(x => x.OptionsJson).HasMaxLength(1000);
             e.Property(x => x.Description).HasMaxLength(500);
+            e.Property(x => x.DefaultSchema).HasColumnName("DEFAULT_SCHEMA").HasMaxLength(128);
+            e.Property(x => x.AllowedSchemas).HasColumnName("ALLOWED_SCHEMAS").HasMaxLength(2000);
         });
     }
 }

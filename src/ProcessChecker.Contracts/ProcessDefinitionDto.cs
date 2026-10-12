@@ -41,6 +41,7 @@ public class TriggerDefinition
     public string? Query { get; set; }             // SQL that returns new entries
     public string? KeyColumn { get; set; }
     public int EveryMinutes { get; set; } = 5;
+    public string? Schema { get; set; }
 }
 
 public class StepDefinition
@@ -64,6 +65,7 @@ public class StepDefinition
     // DataFetch
     public string? Connection { get; set; }
     public string? Query { get; set; }
+    public string? Schema { get; set; }
 }
 
 public class FieldDefinition

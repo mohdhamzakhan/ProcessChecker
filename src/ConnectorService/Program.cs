@@ -27,6 +27,9 @@ builder.Services.AddSingleton<IConnector, CsvFileConnector>();
 builder.Services.AddSingleton<ConnectorRegistry>();
 builder.Services.AddScoped<ConnectionStore>();
 
+
+builder.Services.AddMemoryCache();
+builder.Services.AddScoped<SchemaResolver>();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
@@ -147,7 +150,7 @@ app.MapGet("/api/connections/{name}/tables", async (
 });
 
 app.MapPost("/api/connections/{name}/query", async (
-    string name, QueryRequest req, ConnectionStore store, ConnectorRegistry reg,
+    string name, QueryRequest req, ConnectionStore store, ConnectorRegistry reg, SchemaResolver schemas,
     IConfiguration cfg, CancellationToken ct) =>
 {
     var e = await store.GetEntityAsync(name);
@@ -160,14 +163,71 @@ app.MapPost("/api/connections/{name}/query", async (
 
     try
     {
-        var res = await reg.Get(e.Type).QueryAsync(
-            store.Resolve(e), req.Query, ToParams(req.Parameters), max, cts.Token);
-        return Results.Ok(new { res.Columns, res.Rows, res.Truncated, Count = res.Rows.Count });
+        var connector = reg.Get(e.Type);
+        var rc = store.Resolve(e);
+        rc = rc with { Schema = await schemas.ResolveAsync(e, rc, connector, req.Schema, cts.Token) };
+
+        var res = await connector.QueryAsync(rc, req.Query, ToParams(req.Parameters), max, cts.Token);
+        return Results.Ok(new { res.Columns, res.Rows, res.Truncated, Count = res.Rows.Count, schema = rc.Schema });
     }
     catch (Exception ex) when (ex is not OperationCanceledException)
     {
         return Results.BadRequest(new { error = ex.Message });
     }
+});
+
+// ---- Schema browsing ----
+app.MapGet("/api/connections/{name}/schemas", async (
+    string name, ConnectionStore store, ConnectorRegistry reg, SchemaResolver schemas, CancellationToken ct) =>
+{
+    var e = await store.GetEntityAsync(name);
+    if (e is null) return Results.NotFound();
+    try
+    {
+        var list = await schemas.AvailableAsync(e, store.Resolve(e), reg.Get(e.Type), ct);
+        return Results.Ok(new
+        {
+            schemas = list,
+            defaultSchema = e.DefaultSchema,
+            restricted = !string.IsNullOrWhiteSpace(e.AllowedSchemas)
+        });
+    }
+    catch (Exception ex) when (ex is not OperationCanceledException)
+    { return Results.BadRequest(new { error = ex.Message }); }
+});
+
+app.MapGet("/api/connections/{name}/schemas/{schema}/tables", async (
+    string name, string schema, ConnectionStore store, ConnectorRegistry reg,
+    SchemaResolver schemas, CancellationToken ct) =>
+{
+    var e = await store.GetEntityAsync(name);
+    if (e is null) return Results.NotFound();
+    try
+    {
+        var connector = reg.Get(e.Type);
+        var rc = store.Resolve(e);
+        var s = await schemas.ResolveAsync(e, rc, connector, schema, ct);
+        return Results.Ok(await ((ISchemaConnector)connector).GetSchemaTablesAsync(rc, s!, ct));
+    }
+    catch (Exception ex) when (ex is not OperationCanceledException)
+    { return Results.BadRequest(new { error = ex.Message }); }
+});
+
+app.MapGet("/api/connections/{name}/schemas/{schema}/tables/{table}/columns", async (
+    string name, string schema, string table, ConnectionStore store, ConnectorRegistry reg,
+    SchemaResolver schemas, CancellationToken ct) =>
+{
+    var e = await store.GetEntityAsync(name);
+    if (e is null) return Results.NotFound();
+    try
+    {
+        var connector = reg.Get(e.Type);
+        var rc = store.Resolve(e);
+        var s = await schemas.ResolveAsync(e, rc, connector, schema, ct);
+        return Results.Ok(await ((ISchemaConnector)connector).GetColumnsAsync(rc, s!, table, ct));
+    }
+    catch (Exception ex) when (ex is not OperationCanceledException)
+    { return Results.BadRequest(new { error = ex.Message }); }
 });
 
 app.Run();
