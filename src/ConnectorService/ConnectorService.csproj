@@ -17,4 +17,8 @@
     <PackageReference Include="System.Data.OleDb" Version="8.0.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\ProcessChecker.Contracts\ProcessChecker.Contracts.csproj" />
+  </ItemGroup>
+
 </Project>

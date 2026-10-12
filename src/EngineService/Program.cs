@@ -10,12 +10,15 @@ var cfg = builder.Configuration;
 
 builder.Services.AddDbContext<EngineDb>(o => o.UseOracle(cfg.GetConnectionString("Default")));
 
+var gk = cfg["Gateway:Key"];
+void AddKey(HttpClient c) { if (!string.IsNullOrWhiteSpace(gk)) c.DefaultRequestHeaders.Add(InternalAuth.KeyHeader, gk); }
+
 builder.Services.AddHttpClient<DefinitionClient>(c =>
-{ c.BaseAddress = new Uri(cfg["Services:Definition"]!); c.Timeout = TimeSpan.FromSeconds(30); });
+{ c.BaseAddress = new Uri(cfg["Services:Definition"]!); c.Timeout = TimeSpan.FromSeconds(30); AddKey(c); });
 builder.Services.AddHttpClient<ConnectorClient>(c =>
-{ c.BaseAddress = new Uri(cfg["Services:Connector"]!); c.Timeout = TimeSpan.FromSeconds(90); });
+{ c.BaseAddress = new Uri(cfg["Services:Connector"]!); c.Timeout = TimeSpan.FromSeconds(90); AddKey(c); });
 builder.Services.AddHttpClient<NotificationClient>(c =>
-{ c.BaseAddress = new Uri(cfg["Services:Notification"]!); c.Timeout = TimeSpan.FromSeconds(30); });
+{ c.BaseAddress = new Uri(cfg["Services:Notification"]!); c.Timeout = TimeSpan.FromSeconds(30); AddKey(c); });
 
 // One handler per step type. A new step type = a new class + one line here.
 builder.Services.AddScoped<IStepHandler, ApprovalHandler>();
@@ -35,6 +38,7 @@ builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAn
 
 var app = builder.Build();
 app.UseCors();
+app.UseInternalKey();
 app.UseSwagger();
 app.UseSwaggerUI();
 
@@ -61,11 +65,25 @@ using (var scope = app.Services.CreateScope())
 app.MapGet("/api/health", () => Results.Ok(new { status = "ok" }));
 
 // ------------------------------------------------------------ start / list / detail
-app.MapPost("/api/instances/start", async (StartRequest req, WorkflowEngine engine, CancellationToken ct) =>
+app.MapPost("/api/instances/start", async (HttpContext http, StartRequest req, WorkflowEngine engine, CancellationToken ct) =>
 {
+    if (http.Caller() is { } who) req = req with { StartedBy = who };
     var inst = await engine.StartAsync(req, ct);
     return Results.Created($"/api/instances/{inst.Id}", Mapper.ToDetail(inst));
 });
+
+async Task<IResult> Act(HttpContext http, WorkflowEngine engine, EngineDb db, Guid id, string stepKey,
+    string action, ActRequest? r, CancellationToken ct)
+{
+    r ??= new ActRequest(null, null, null, null);
+    if (http.Caller() is { } who) r = r with { By = who };     // nobody can act as someone else
+    await engine.ActAsync(id, stepKey, new StepAction(action, r.By, r.Note, r.Values, r.Files), ct);
+
+    var inst = await db.Instances.AsNoTracking()
+        .Include(i => i.Steps).ThenInclude(s => s.Approvals)
+        .FirstAsync(i => i.Id == id, ct);
+    return Results.Ok(Mapper.ToDetail(inst));
+}
 
 app.MapGet("/api/instances", async (
     EngineDb db, string? status, string? processKey, string? q, int? page, int? pageSize, CancellationToken ct) =>
@@ -92,54 +110,42 @@ app.MapGet("/api/instances/{id:guid}", async (Guid id, EngineDb db, Cancellation
 });
 
 // ------------------------------------------------------------ act on a step
-async Task<IResult> Act(WorkflowEngine engine, EngineDb db, Guid id, string stepKey,
-    string action, ActRequest? r, CancellationToken ct)
-{
-    r ??= new ActRequest(null, null, null, null);
-    await engine.ActAsync(id, stepKey, new StepAction(action, r.By, r.Note, r.Values, r.Files), ct);
-
-    var inst = await db.Instances.AsNoTracking()
-        .Include(i => i.Steps).ThenInclude(s => s.Approvals)
-        .FirstAsync(i => i.Id == id, ct);
-    return Results.Ok(Mapper.ToDetail(inst));
-}
 
 app.MapPost("/api/instances/{id:guid}/steps/{stepKey}/approve",
-    (Guid id, string stepKey, ActRequest? r, WorkflowEngine e, EngineDb db, CancellationToken ct) =>
-        Act(e, db, id, stepKey, "approve", r, ct));
+    (HttpContext http, Guid id, string stepKey, ActRequest? r, WorkflowEngine e, EngineDb db, CancellationToken ct) =>
+        Act(http, e, db, id, stepKey, "approve", r, ct));
 
 app.MapPost("/api/instances/{id:guid}/steps/{stepKey}/reject",
-    (Guid id, string stepKey, ActRequest? r, WorkflowEngine e, EngineDb db, CancellationToken ct) =>
-        Act(e, db, id, stepKey, "reject", r, ct));
+    (HttpContext http, Guid id, string stepKey, ActRequest? r, WorkflowEngine e, EngineDb db, CancellationToken ct) =>
+        Act(http, e, db, id, stepKey, "reject", r, ct));
 
 app.MapPost("/api/instances/{id:guid}/steps/{stepKey}/submit",
-    (Guid id, string stepKey, ActRequest? r, WorkflowEngine e, EngineDb db, CancellationToken ct) =>
-        Act(e, db, id, stepKey, "submit", r, ct));
+    (HttpContext http, Guid id, string stepKey, ActRequest? r, WorkflowEngine e, EngineDb db, CancellationToken ct) =>
+        Act(http, e, db, id, stepKey, "submit", r, ct));
 
 app.MapPost("/api/instances/{id:guid}/steps/{stepKey}/upload",
-    (Guid id, string stepKey, ActRequest? r, WorkflowEngine e, EngineDb db, CancellationToken ct) =>
-        Act(e, db, id, stepKey, "upload", r, ct));
+    (HttpContext http, Guid id, string stepKey, ActRequest? r, WorkflowEngine e, EngineDb db, CancellationToken ct) =>
+        Act(http, e, db, id, stepKey, "upload", r, ct));
 
-app.MapPost("/api/instances/{id:guid}/steps/{stepKey}/retry",
-    async (Guid id, string stepKey, WorkflowEngine engine, EngineDb db, CancellationToken ct) =>
-    {
-        await engine.RetryAsync(id, stepKey, ct);
-        var inst = await db.Instances.AsNoTracking()
-            .Include(i => i.Steps).ThenInclude(s => s.Approvals)
-            .FirstAsync(i => i.Id == id, ct);
-        return Results.Ok(Mapper.ToDetail(inst));
-    });
-
-app.MapPost("/api/instances/{id:guid}/cancel", async (Guid id, WorkflowEngine engine, CancellationToken ct) =>
+app.MapPost("/api/instances/{id:guid}/cancel", async (
+    HttpContext http, Guid id, EngineDb db, WorkflowEngine engine, CancellationToken ct) =>
 {
+    if (http.Caller() is { } who && !http.IsAdmin())
+    {
+        var starter = await db.Instances.AsNoTracking().Where(i => i.Id == id)
+            .Select(i => i.StartedBy).FirstOrDefaultAsync(ct);
+        if (!string.Equals(starter, who, StringComparison.OrdinalIgnoreCase))
+            return Results.Json(new { error = "Only the person who started this request, or an admin, can cancel it." },
+                statusCode: 403);
+    }
     await engine.CancelAsync(id, ct);
     return Results.NoContent();
 });
 
 // ------------------------------------------------------------ inbox + dashboard
-app.MapGet("/api/tasks", async (EngineDb db, string? user, CancellationToken ct) =>
+app.MapGet("/api/tasks", async (HttpContext http, EngineDb db, string? user, CancellationToken ct) =>
 {
-    var email = user?.Trim().ToLowerInvariant();
+    var email = (http.Caller() ?? user)?.Trim().ToLowerInvariant();
 
     var approvals = string.IsNullOrEmpty(email)
         ? new List<TaskItem>()
