@@ -2,9 +2,53 @@
 import { useParams } from "react-router-dom";
 import { api, uploadDocument } from "../api";
 import { useUser } from "../user";
-import { Badge, DynamicForm, ErrorBox, FileLinks, Stepper, fmt } from "../ui";
+import { buildLink } from "../links";
+import Icon from "../designer/Icon";
+import UserPicker from "../UserPicker";
+import { Badge, DynamicForm, ErrorBox, FileLinks, SafeLink, Stepper, fmt } from "../ui";
 
-function StepAction({ detail, step, user, onDone }) {
+function AssignBar({ detail, step, isAdmin, onDone }) {
+    const [edit, setEdit] = useState(false);
+    const [list, setList] = useState([]);
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState(null);
+
+    const isApproval = step.type === "Approval";
+    const current = isApproval ? (step.approvals || []).map((a) => a.approver) : step.assignees || [];
+
+    const save = async () => {
+        setBusy(true); setError(null);
+        try {
+            onDone(await api.post(`/api/instances/${detail.summary.id}/steps/${step.key}/assign`, { assignees: list }));
+            setEdit(false);
+        } catch (e) { setError(e); } finally { setBusy(false); }
+    };
+
+    return (
+        <div className="assignbar">
+            <Icon name="users" size={16} />
+            <div className="assignwho">
+                <small>{isApproval ? "Approvers" : "Assigned to"}</small>
+                <b>{current.length ? current.join(", ") : "Anyone"}</b>
+            </div>
+            {isAdmin && !edit && (
+                <button className="secondary" type="button" onClick={() => { setList(current); setEdit(true); }}>Change</button>
+            )}
+            {edit && (
+                <div className="assignedit">
+                    <UserPicker value={list} onChange={setList} />
+                    <ErrorBox error={error} />
+                    <div className="actions" style={{ marginTop: 8 }}>
+                        <button disabled={busy || list.length === 0} onClick={save}>{busy ? "Saving..." : "Save and notify"}</button>
+                        <button className="secondary" onClick={() => setEdit(false)}>Cancel</button>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+function StepAction({ detail, step, user, isAdmin, onDone }) {
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState(null);
     const [note, setNote] = useState("");
@@ -16,7 +60,6 @@ function StepAction({ detail, step, user, onDone }) {
         setBusy(true); setError(null);
         try { onDone(await fn()); } catch (e) { setError(e); } finally { setBusy(false); }
     };
-    // upload to DocumentService first, then give the step the stored file id
     const withFile = async (f) =>
         f ? [await uploadDocument(f, { instanceId: id, stepKey: step.key })] : undefined;
 
@@ -32,22 +75,30 @@ function StepAction({ detail, step, user, onDone }) {
     }
     if (step.status !== "InProgress") return null;
 
+    const bar = <AssignBar detail={detail} step={step} isAdmin={isAdmin} onDone={onDone} />;
     const header = <h3>Action needed: {step.name}</h3>;
+    const assigned = step.assignees || [];
+    const canAct = assigned.length === 0 || isAdmin || assigned.includes(user.toLowerCase());
+    const notYours = (
+        <p className="muted">This task is assigned to other people. Only they, or an admin, can complete it.</p>
+    );
 
     if (step.type === "Approval") {
         const me = step.approvals?.find((a) => a.approver === user.toLowerCase());
         return (
             <div className="panel">
                 {header}
-                <p>Approvers: {step.approvals?.map((a) => a.approver).join(", ")}</p>
+                {bar}
                 {!me && <p className="muted">You are not an approver for this step.</p>}
                 {me && !me.decision && (
                     <>
                         <label><span>Note (optional)</span>
                             <input value={note} onChange={(e) => setNote(e.target.value)} /></label>
                         <ErrorBox error={error} />
-                        <button disabled={busy} onClick={() => run(() => api.post(`${base}/approve`, { note }))}>Approve</button>{" "}
-                        <button disabled={busy} className="danger" onClick={() => run(() => api.post(`${base}/reject`, { note }))}>Reject</button>
+                        <div className="actions" style={{ marginTop: 10 }}>
+                            <button disabled={busy} onClick={() => run(() => api.post(`${base}/approve`, { note }))}>Approve</button>
+                            <button disabled={busy} className="danger" onClick={() => run(() => api.post(`${base}/reject`, { note }))}>Reject</button>
+                        </div>
                     </>
                 )}
             </div>
@@ -58,14 +109,15 @@ function StepAction({ detail, step, user, onDone }) {
         return (
             <div className="panel">
                 {header}
-                <ErrorBox error={error} />
-                <DynamicForm
-                    fields={step.fields || []}
-                    allowUpload={step.allowUpload}
-                    busy={busy}
-                    onSubmit={(values, f) =>
-                        run(async () => api.post(`${base}/submit`, { values, files: await withFile(f) }))}
-                />
+                {bar}
+                {!canAct ? notYours : (
+                    <>
+                        <ErrorBox error={error} />
+                        <DynamicForm fields={step.fields || []} allowUpload={step.allowUpload} busy={busy}
+                            onSubmit={(values, f) =>
+                                run(async () => api.post(`${base}/submit`, { values, files: await withFile(f) }))} />
+                    </>
+                )}
             </div>
         );
     }
@@ -74,15 +126,20 @@ function StepAction({ detail, step, user, onDone }) {
         return (
             <div className="panel">
                 {header}
-                <p className="muted">Allowed: PDF, images, Word, Excel, CSV, TXT. Maximum 20 MB.</p>
-                <input type="file" onChange={(e) => setFile(e.target.files[0] || null)} />
-                <ErrorBox error={error} />
-                <p>
-                    <button disabled={busy || !file}
-                        onClick={() => run(async () => api.post(`${base}/upload`, { files: await withFile(file) }))}>
-                        {busy ? "Uploading..." : "Upload confirmation"}
-                    </button>
-                </p>
+                {bar}
+                {!canAct ? notYours : (
+                    <>
+                        <p className="muted">Allowed: PDF, images, Word, Excel, CSV, TXT. Maximum 20 MB.</p>
+                        <input type="file" onChange={(e) => setFile(e.target.files[0] || null)} />
+                        <ErrorBox error={error} />
+                        <p>
+                            <button disabled={busy || !file}
+                                onClick={() => run(async () => api.post(`${base}/upload`, { files: await withFile(file) }))}>
+                                {busy ? "Uploading..." : "Upload confirmation"}
+                            </button>
+                        </p>
+                    </>
+                )}
             </div>
         );
     }
@@ -91,20 +148,31 @@ function StepAction({ detail, step, user, onDone }) {
 
 export default function InstanceDetail() {
     const { id } = useParams();
-    const { user } = useUser();
+    const { user, isAdmin } = useUser();
     const [detail, setDetail] = useState(null);
     const [error, setError] = useState(null);
+    const [links, setLinks] = useState([]);
 
     const load = useCallback(() =>
         api.get(`/api/instances/${id}`).then((d) => { setDetail(d); setError(null); }).catch(setError), [id]);
 
     useEffect(() => { load(); }, [load]);
 
+    const processKey = detail?.summary.processKey;
+    useEffect(() => {
+        if (!processKey) return;
+        api.get(`/api/definitions/${encodeURIComponent(processKey)}`)
+            .then((r) => setLinks(r.definition.links || []))
+            .catch(() => setLinks([]));
+    }, [processKey]);
+
     if (!detail) return <><ErrorBox error={error} /><p className="muted">Loading...</p></>;
 
     const s = detail.summary;
     const active = detail.steps.find((x) => x.status === "InProgress" || x.status === "Failed");
     const canCancel = s.status === "Running" || s.status === "Failed";
+    const built = links.map((l) => ({ ...l, ...buildLink(l.url, detail.data) }));
+    const files = detail.steps.flatMap((st) => (st.output?.files || []).map((f) => ({ ...f, step: st.name })));
 
     const cancel = async () => {
         if (!confirm("Cancel this request?")) return;
@@ -123,37 +191,64 @@ export default function InstanceDetail() {
 
             <Stepper steps={detail.steps} />
 
+            {built.length > 0 && (
+                <div className="panel">
+                    <h3>Documents</h3>
+                    {built.map((l, i) =>
+                        l.valid ? (
+                            <SafeLink key={i} url={l.url} label={l.label} />
+                        ) : (
+                            <div key={i} className="linkrow">
+                                <Icon name="link" size={16} />
+                                <span className="muted">
+                                    {l.label}: {l.missing.length ? `waiting for ${l.missing.join(", ")}` : "the address is not valid"}
+                                </span>
+                            </div>
+                        )
+                    )}
+                </div>
+            )}
+
+            {files.length > 0 && (
+                <div className="panel">
+                    <h3>Files</h3>
+                    <FileLinks files={files} />
+                </div>
+            )}
+
             {active && (
-                <StepAction key={active.id + active.status} detail={detail} step={active} user={user}
-                    onDone={(d) => setDetail(d)} />
+                <StepAction key={active.id + active.status} detail={detail} step={active}
+                    user={user} isAdmin={isAdmin} onDone={(d) => setDetail(d)} />
             )}
             {canCancel && <button className="secondary" onClick={cancel}>Cancel request</button>}
 
             <h3>Step history</h3>
-            <table>
-                <thead><tr><th>#</th><th>Step</th><th>Type</th><th>Status</th><th>By</th><th>Started</th><th>Completed</th><th>Details</th></tr></thead>
-                <tbody>
-                    {detail.steps.map((st) => (
-                        <tr key={st.id}>
-                            <td>{st.order + 1}</td><td>{st.name}</td><td>{st.type}</td>
-                            <td><Badge status={st.status} /></td>
-                            <td>{st.actionBy || ""}</td><td>{fmt(st.startedAt)}</td><td>{fmt(st.completedAt)}</td>
-                            <td>
-                                {st.approvals && (
-                                    <div>{st.approvals.map((a) => (
-                                        <div key={a.approver}><small>{a.approver}: {a.decision || "waiting"}{a.note && ` (${a.note})`}</small></div>
-                                    ))}</div>
-                                )}
-                                <FileLinks files={st.output?.files} />
-                                {st.error && <div className="ok-err">{st.error}</div>}
-                                {st.output && (
-                                    <details><summary>output</summary><pre>{JSON.stringify(st.output, null, 2)}</pre></details>
-                                )}
-                            </td>
-                        </tr>
-                    ))}
-                </tbody>
-            </table>
+            <div className="scroll">
+                <table>
+                    <thead><tr><th>#</th><th>Step</th><th>Type</th><th>Status</th><th>By</th><th>Started</th><th>Completed</th><th>Details</th></tr></thead>
+                    <tbody>
+                        {detail.steps.map((st) => (
+                            <tr key={st.id}>
+                                <td>{st.order + 1}</td><td>{st.name}</td><td>{st.type}</td>
+                                <td><Badge status={st.status} /></td>
+                                <td>{st.actionBy || ""}</td><td>{fmt(st.startedAt)}</td><td>{fmt(st.completedAt)}</td>
+                                <td>
+                                    {st.approvals && (
+                                        <div>{st.approvals.map((a) => (
+                                            <div key={a.approver}><small>{a.approver}: {a.decision || "waiting"}{a.note && ` (${a.note})`}</small></div>
+                                        ))}</div>
+                                    )}
+                                    {st.assignees && <div><small>Assigned to {st.assignees.join(", ")}</small></div>}
+                                    {st.error && <div className="ok-err">{st.error}</div>}
+                                    {st.output && (
+                                        <details><summary>output</summary><pre>{JSON.stringify(st.output, null, 2)}</pre></details>
+                                    )}
+                                </td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            </div>
 
             <details>
                 <summary>Collected data</summary>

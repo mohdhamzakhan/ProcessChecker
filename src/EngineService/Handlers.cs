@@ -117,10 +117,12 @@ public class ApprovalHandler : IStepHandler
 // ------------------------------------------------------------ Form
 public class FormHandler : IStepHandler
 {
+    private readonly TaskMailer _tasks;
+    public FormHandler(TaskMailer tasks) => _tasks = tasks;
     public string Type => StepTypes.Form;
 
     public Task<StepResult> StartAsync(StepContext ctx, CancellationToken ct) =>
-        Task.FromResult(StepResult.Wait());
+        _tasks.StartAssignedAsync(ctx, ct);
 
     public Task<StepResult> ActAsync(StepContext ctx, StepAction a, CancellationToken ct)
     {
@@ -204,10 +206,13 @@ public class FormHandler : IStepHandler
 // ------------------------------------------------------------ Upload
 public class UploadHandler : IStepHandler
 {
+    private readonly TaskMailer _tasks;
+    public UploadHandler(TaskMailer tasks) => _tasks = tasks;
+
     public string Type => StepTypes.Upload;
 
     public Task<StepResult> StartAsync(StepContext ctx, CancellationToken ct) =>
-        Task.FromResult(StepResult.Wait());
+        _tasks.StartAssignedAsync(ctx, ct);
 
     public Task<StepResult> ActAsync(StepContext ctx, StepAction a, CancellationToken ct)
     {
@@ -339,5 +344,32 @@ public class DataFetchHandler : IStepHandler
             }
 
         return StepResult.Done(new { count = res.Rows.Count, truncated = res.Truncated, rows = res.Rows.Take(50) });
+    }
+}
+
+// ------------------------------------------------------------ Link
+public class LinkHandler : IStepHandler
+{
+    public string Type => StepTypes.Link;
+
+    public Task<StepResult> StartAsync(StepContext ctx, CancellationToken ct)
+    {
+        var missing = new List<string>();
+        var url = ctx.Data.RenderUrl((ctx.Def.Url ?? "").Trim(), missing);
+
+        if (missing.Count > 0)
+            return Task.FromResult(StepResult.Fail(
+                "No value for: " + string.Join(", ", missing.Select(x => "{{" + x + "}}")) +
+                ". The link was not created."));
+
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+            return Task.FromResult(StepResult.Fail("The result is not a valid http or https address."));
+
+        var label = ctx.Data.Render(
+            string.IsNullOrWhiteSpace(ctx.Def.LinkLabel) ? ctx.Def.Name : ctx.Def.LinkLabel).Trim();
+
+        ctx.Data.Set($"{ctx.Step.StepKey}.url", url);          // usable later as {{stepKey.url}}
+        return Task.FromResult(StepResult.Done(new { url, label }));
     }
 }

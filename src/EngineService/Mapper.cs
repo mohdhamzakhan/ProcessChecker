@@ -26,6 +26,7 @@ public static class Mapper
         {
             var sd = def.Steps.FirstOrDefault(x => x.Key == s.StepKey);
             var isForm = s.StepType == StepTypes.Form;
+            var assigned = TaskMailer.Split(s.Assignees);
 
             return new StepView(
                 s.Id, s.StepKey, s.StepName, s.StepType, s.OrderNo, s.Status,
@@ -35,7 +36,8 @@ public static class Mapper
                 isForm ? sd?.AllowUpload : null,
                 s.Approvals.Count == 0
                     ? null
-                    : s.Approvals.Select(a => new ApprovalView(a.Approver, a.Decision, a.Note, a.DecidedAt)).ToList());
+                    : s.Approvals.Select(a => new ApprovalView(a.Approver, a.Decision, a.Note, a.DecidedAt)).ToList(),
+                assigned.Count == 0 ? null : assigned);
         }).ToList();
 
         var data = DataBag.FromJson(i.DataJson).All.ToDictionary(k => k.Key, k => k.Value);

@@ -13,12 +13,15 @@ import "./designer.css";
 
 function summary(st) {
     switch (st.type) {
-        case "Form": return `${st.fields.length} field${st.fields.length === 1 ? "" : "s"}${st.allowUpload ? " + attachment" : ""}`;
+        case "Form": return `${st.fields.length} field${st.fields.length === 1 ? "" : "s"}${st.allowUpload ? " + attachment" : ""}${st.assignees?.length ? ` · for ${st.assignees.length}` : ""}`;
+        case "Upload": return st.assignees?.length ? `For ${st.assignees.join(", ")}` : "Waits for a file";
         case "Approval": return st.approvers.length ? st.approvers.join(", ") : "No approvers yet";
         case "Dispatch":
         case "Notify": return st.sendTo ? `To ${st.sendTo}` : "No recipient yet";
         case "Upload": return "Waits for a file";
         case "DataFetch": return st.connection ? `Reads from ${st.connection}` : "No data source yet";
+        case "Link": return st.url || "No address yet";
+
         default: return "";
     }
 }

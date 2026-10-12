@@ -8,9 +8,10 @@ public static class StepTypes
     public const string Upload = "Upload";     // user uploads a confirmation file
     public const string DataFetch = "DataFetch";  // query a named database connection
     public const string Notify = "Notify";     // send an email notification
+    public const string Link = "Link";   // build a link to a file or page
 
     public static readonly string[] All =
-        { Approval, Form, Dispatch, Upload, DataFetch, Notify };
+        { Approval, Form, Dispatch, Upload, DataFetch, Notify, Link  };
 }
 
 public static class FieldTypes
@@ -66,6 +67,9 @@ public class StepDefinition
     public string? Connection { get; set; }
     public string? Query { get; set; }
     public string? Schema { get; set; }
+    public string? Url { get; set; }         // template, supports {{field}} and {{field+1}}
+    public string? LinkLabel { get; set; }   // text shown for the link
+    public List<string> Assignees { get; set; } = new();   // Form/Upload: who may do it (empty = anyone)
 }
 
 public class FieldDefinition

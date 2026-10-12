@@ -1,4 +1,5 @@
-﻿using System.Text.Json;
+﻿using System.Globalization;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace EngineService;
@@ -8,7 +9,9 @@ namespace EngineService;
 public class DataBag
 {
     private static readonly Regex Placeholder =
-        new(@"\{\{\s*([\w.\-]+)\s*\}\}", RegexOptions.Compiled);
+        new(@"\{\{\s*([^{}]+?)\s*\}\}", RegexOptions.Compiled);
+    private static readonly Regex Arith =
+        new(@"^([\w.\-]+?)\s*([+-])\s*(\d+)$", RegexOptions.Compiled);
 
     private readonly Dictionary<string, JsonElement> _d = new(StringComparer.OrdinalIgnoreCase);
 
@@ -32,6 +35,24 @@ public class DataBag
         return bag;
     }
 
+    public string? Resolve(string token)
+    {
+        token = token.Trim();
+        var direct = GetString(token);              // a real field called "a-b" wins over "a minus b"
+        if (direct != null) return direct;
+
+        var m = Arith.Match(token);
+        if (!m.Success) return null;
+        var baseValue = GetString(m.Groups[1].Value);
+        if (baseValue == null ||
+            !decimal.TryParse(baseValue, NumberStyles.Number, CultureInfo.InvariantCulture, out var n))
+            return null;
+
+        var delta = decimal.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture);
+        var result = m.Groups[2].Value == "+" ? n + delta : n - delta;
+        return result.ToString("0.############", CultureInfo.InvariantCulture);
+    }
+
     public void Set(string key, object? value) => _d[key] = JsonSerializer.SerializeToElement(value);
     public void SetElement(string key, JsonElement value) => _d[key] = value.Clone();
 
@@ -42,10 +63,23 @@ public class DataBag
 
     /// Replaces {{name}} placeholders. Unknown names become empty text.
     public string Render(string? template) =>
-        string.IsNullOrEmpty(template)
-            ? ""
-            : Placeholder.Replace(template, m => GetString(m.Groups[1].Value) ?? "");
-
+     string.IsNullOrEmpty(template)
+         ? ""
+         : Placeholder.Replace(template, m => Resolve(m.Groups[1].Value) ?? "");
+    public string RenderUrl(string? template, List<string> missing) =>
+    string.IsNullOrEmpty(template)
+        ? ""
+        : Placeholder.Replace(template, m =>
+        {
+            var token = m.Groups[1].Value.Trim();
+            var v = Resolve(token);
+            if (string.IsNullOrEmpty(v))
+            {
+                if (!missing.Contains(token)) missing.Add(token);
+                return "";
+            }
+            return Uri.EscapeDataString(v);
+        });
     public static string Text(JsonElement e) => e.ValueKind switch
     {
         JsonValueKind.String => e.GetString() ?? "",
@@ -54,4 +88,6 @@ public class DataBag
         JsonValueKind.False => "false",
         _ => e.GetRawText()
     };
+
+
 }

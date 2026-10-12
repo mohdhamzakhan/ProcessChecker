@@ -239,7 +239,7 @@ static async Task<UserEntity?> UpsertAdUser(GatewayDb db, AdUser a, AdOptions o)
     else
     {
         user.DisplayName = a.DisplayName;
-        if (!string.IsNullOrWhiteSpace(o.AdminGroupDn))
+        if (o.AdminGroups.Length > 0)
             user.Role = a.IsAdmin ? Roles.Admin : Roles.User;
     }
     await db.SaveChangesAsync();
@@ -333,6 +333,38 @@ admin.MapPatch("/{id:guid}", async (
     cache.Remove($"user:{id}");
     return Results.Ok(Dto(user));
 });
+
+app.MapGet("/api/auth/directory", async (string? q, GatewayDb db, AdService ad, ILogger<Program> log) =>
+{
+    var term = (q ?? "").Trim();
+    if (term.Length < 2) return Results.Ok(new { items = Array.Empty<object>(), warning = (string?)null });
+
+    var like = term.ToLowerInvariant();
+    var local = await db.Users.AsNoTracking()
+        .Where(u => u.IsActive && (u.Email.Contains(like) || u.DisplayName.ToLower().Contains(like)))
+        .OrderBy(u => u.Email).Take(15)
+        .Select(u => new { u.Email, u.DisplayName, u.AuthSource })
+        .ToListAsync();
+
+    var items = local.Select(u => new { email = u.Email, name = u.DisplayName, username = u.Email, source = u.AuthSource }).ToList();
+    string? warning = null;
+
+    if (ad.Enabled)
+    {
+        try
+        {
+            foreach (var p in await Task.Run(() => ad.Search(term)))
+                if (!items.Any(i => i.email == p.Email))
+                    items.Add(new { email = p.Email, name = p.Name, username = p.Username, source = "AD" });
+        }
+        catch (AdUnavailableException ex)
+        {
+            log.LogWarning(ex, "Directory search failed");
+            warning = "The company directory could not be searched. Local users and typed addresses still work.";
+        }
+    }
+    return Results.Ok(new { items = items.OrderBy(i => i.name).Take(20), warning });
+}).RequireAuthorization("admin");
 
 app.MapReverseProxy();
 app.Run();

@@ -8,7 +8,18 @@ public class DefinitionValidator
     private static readonly Regex KeyRegex = new("^[a-z0-9-]+$", RegexOptions.Compiled);
     private static readonly Regex SchemaRegex = new(@"^[A-Za-z][A-Za-z0-9_$#]{0,127}$", RegexOptions.Compiled);
     private static readonly Regex PlaceholderRegex = new(@"^\{\{\s*[\w.\-]+\s*\}\}$", RegexOptions.Compiled);
+    private static readonly Regex UrlStart =
+    new(@"^https?://[^/?#{}\s]+(?=[/?#]|$)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    private static readonly Regex AssigneeRegex = new(
+    @"^([^\s@;,{}]+@[^\s@;,{}]+\.[^\s@;,{}]+|\{\{\s*[\w.\-]+\s*\}\})$", RegexOptions.Compiled);
+
+    private static void CheckAssignees(StepDefinition s, string p, List<string> errors)
+    {
+        foreach (var a in s.Assignees)
+            if (!AssigneeRegex.IsMatch(a.Trim()))
+                errors.Add(p + ": '" + a + "' is not an email address or a {{field}} placeholder.");
+    }
     public List<string> Validate(ProcessDefinitionDto d)
     {
         var errors = new List<string>();
@@ -73,6 +84,11 @@ public class DefinitionValidator
 
                 case StepTypes.Form:
                     ValidateFields(s, p, errors);
+                    CheckAssignees(s, p, errors);
+                    break;
+
+                case StepTypes.Upload:
+                    CheckAssignees(s, p, errors);
                     break;
 
                 case StepTypes.Dispatch:
@@ -92,6 +108,13 @@ public class DefinitionValidator
                         errors.Add($"{p}: Connection is required.");
                     if (string.IsNullOrWhiteSpace(s.Query))
                         errors.Add($"{p}: Query is required.");
+                    break;
+
+                case StepTypes.Link:
+                    if (string.IsNullOrWhiteSpace(s.Url))
+                        errors.Add($"{p}: Url is required.");
+                    else if (!UrlStart.IsMatch(s.Url.Trim()))
+                        errors.Add($"{p}: Url must start with http:// or https:// and a fixed server name (no placeholder in the server part).");
                     break;
             }
         }

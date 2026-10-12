@@ -55,6 +55,7 @@ public class StepInstance
     public DateTime? StartedAt { get; set; }
     public DateTime? CompletedAt { get; set; }
     public List<StepApproval> Approvals { get; set; } = new();
+    public string? Assignees { get; set; }     // ";a@x.com;b@y.com;" (empty = anyone)
 }
 
 public class StepApproval
@@ -81,8 +82,8 @@ public class TriggerSeen
 public record FileRef(string FileId, string? FileName);
 public record StartRequest(string ProcessKey, Dictionary<string, JsonElement>? Data, string? StartedBy, string? Title);
 public record ActRequest(string? By, string? Note, Dictionary<string, JsonElement>? Values, List<FileRef>? Files);
-public record StepAction(string Name, string? By, string? Note, Dictionary<string, JsonElement>? Values, List<FileRef>? Files);
-
+public record StepAction(string Name, string? By, string? Note,
+    Dictionary<string, JsonElement>? Values, List<FileRef>? Files, bool IsAdmin = false);
 public record DefinitionInfo(
     Guid Id, string Key, string Name, int Version, bool IsActive,
     DateTime CreatedAt, ProcessDefinitionDto Definition);
@@ -94,7 +95,7 @@ public record StepView(
     Guid Id, string Key, string Name, string Type, int Order, string Status,
     string? ActionBy, DateTime? StartedAt, DateTime? CompletedAt, string? Error,
     JsonElement? Output, List<FieldDefinition>? Fields, bool? AllowUpload,
-    List<ApprovalView>? Approvals);
+    List<ApprovalView>? Approvals, List<string>? Assignees);
 
 public record InstanceSummary(
     Guid Id, string ProcessKey, string ProcessName, int ProcessVersion, string Title,
@@ -104,10 +105,9 @@ public record InstanceSummary(
 public record InstanceDetail(
     InstanceSummary Summary, Dictionary<string, JsonElement> Data, List<StepView> Steps);
 
-public record TaskItem(
-    Guid InstanceId, string Title, string ProcessName,
-    string StepKey, string StepName, string StepType, DateTime? Since);
-
+public record TaskItem(Guid InstanceId, string Title, string ProcessName,
+    string StepKey, string StepName, string StepType, DateTime? Since, string? Assignees);
+public record ReassignRequest(string[]? Assignees);
 public class EngineException : Exception
 {
     public int Status { get; }

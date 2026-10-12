@@ -27,6 +27,8 @@ builder.Services.AddScoped<IStepHandler, UploadHandler>();
 builder.Services.AddScoped<IStepHandler, DispatchHandler>();
 builder.Services.AddScoped<IStepHandler, NotifyHandler>();
 builder.Services.AddScoped<IStepHandler, DataFetchHandler>();
+builder.Services.AddScoped<IStepHandler, LinkHandler>();
+builder.Services.AddScoped<TaskMailer>();
 
 builder.Services.AddScoped<WorkflowEngine>();
 builder.Services.AddScoped<PollingService>();
@@ -77,7 +79,7 @@ async Task<IResult> Act(HttpContext http, WorkflowEngine engine, EngineDb db, Gu
 {
     r ??= new ActRequest(null, null, null, null);
     if (http.Caller() is { } who) r = r with { By = who };     // nobody can act as someone else
-    await engine.ActAsync(id, stepKey, new StepAction(action, r.By, r.Note, r.Values, r.Files), ct);
+    await engine.ActAsync(id, stepKey, new StepAction(action, r.By, r.Note, r.Values, r.Files, http.IsAdmin()), ct);
 
     var inst = await db.Instances.AsNoTracking()
         .Include(i => i.Steps).ThenInclude(s => s.Approvals)
@@ -86,12 +88,13 @@ async Task<IResult> Act(HttpContext http, WorkflowEngine engine, EngineDb db, Gu
 }
 
 app.MapGet("/api/instances", async (
-    EngineDb db, string? status, string? processKey, string? q, int? page, int? pageSize, CancellationToken ct) =>
+    EngineDb db, string? status, string? processKey, string? q, string ? startedBy, int ? page, int? pageSize, CancellationToken ct) =>
 {
     IQueryable<ProcessInstance> query = db.Instances.AsNoTracking().Include(i => i.Steps);
     if (!string.IsNullOrWhiteSpace(status)) query = query.Where(i => i.Status == status);
     if (!string.IsNullOrWhiteSpace(processKey)) query = query.Where(i => i.ProcessKey == processKey);
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(i => i.Title.Contains(q));
+    if (!string.IsNullOrWhiteSpace(startedBy)) query = query.Where(i => i.StartedBy == startedBy);
 
     var size = Math.Clamp(pageSize ?? 25, 1, 100);
     var p = Math.Max(page ?? 1, 1);
@@ -109,6 +112,30 @@ app.MapGet("/api/instances/{id:guid}", async (Guid id, EngineDb db, Cancellation
     return inst is null ? Results.NotFound() : Results.Ok(Mapper.ToDetail(inst));
 });
 
+app.MapPost("/api/instances/{id:guid}/steps/{stepKey}/retry",
+    async (Guid id, string stepKey, WorkflowEngine engine, EngineDb db, CancellationToken ct) =>
+    {
+        await engine.RetryAsync(id, stepKey, ct);
+        var inst = await db.Instances.AsNoTracking()
+            .Include(i => i.Steps).ThenInclude(s => s.Approvals)
+            .FirstAsync(i => i.Id == id, ct);
+        return Results.Ok(Mapper.ToDetail(inst));
+    });
+
+app.MapPost("/api/instances/{id:guid}/steps/{stepKey}/assign", async (
+    HttpContext http, Guid id, string stepKey, ReassignRequest r,
+    WorkflowEngine engine, EngineDb db, CancellationToken ct) =>
+{
+    if (!http.IsAdmin())
+        return Results.Json(new { error = "Only an admin can assign tasks." }, statusCode: 403);
+
+    await engine.ReassignAsync(id, stepKey, r.Assignees ?? Array.Empty<string>(), http.Caller(), ct);
+
+    var inst = await db.Instances.AsNoTracking()
+        .Include(i => i.Steps).ThenInclude(s => s.Approvals)
+        .FirstAsync(i => i.Id == id, ct);
+    return Results.Ok(Mapper.ToDetail(inst));
+});
 // ------------------------------------------------------------ act on a step
 
 app.MapPost("/api/instances/{id:guid}/steps/{stepKey}/approve",
@@ -154,18 +181,28 @@ app.MapGet("/api/tasks", async (HttpContext http, EngineDb db, string? user, Can
                         && a.Step.Status == StepState.InProgress
                         && a.Step.Instance.Status == InstanceStatus.Running)
             .Select(a => new TaskItem(a.Step.InstanceId, a.Step.Instance.Title, a.Step.Instance.ProcessName,
-                a.Step.StepKey, a.Step.StepName, a.Step.StepType, a.Step.StartedAt))
+                a.Step.StepKey, a.Step.StepName, a.Step.StepType, a.Step.StartedAt, null))
             .ToListAsync(ct);
 
-    var open = await db.Steps.AsNoTracking()
+    var waiting = await db.Steps.AsNoTracking()
         .Where(s => s.Status == StepState.InProgress
                     && (s.StepType == StepTypes.Form || s.StepType == StepTypes.Upload)
                     && s.Instance.Status == InstanceStatus.Running)
         .Select(s => new TaskItem(s.InstanceId, s.Instance.Title, s.Instance.ProcessName,
-            s.StepKey, s.StepName, s.StepType, s.StartedAt))
+            s.StepKey, s.StepName, s.StepType, s.StartedAt, s.Assignees))
         .ToListAsync(ct);
 
-    return Results.Ok(new { approvals, open });
+    bool Mine(TaskItem t) => email != null && TaskMailer.Split(t.Assignees).Contains(email);
+
+    var mine = approvals.Concat(waiting.Where(Mine)).OrderBy(t => t.Since).ToList();
+    var open = waiting.Where(t => string.IsNullOrEmpty(t.Assignees)).OrderBy(t => t.Since).ToList();
+    var others = http.IsAdmin()
+        ? waiting.Where(t => !string.IsNullOrEmpty(t.Assignees) && !Mine(t))
+            .Select(t => t with { Assignees = string.Join(", ", TaskMailer.Split(t.Assignees)) })
+            .OrderBy(t => t.Since).ToList()
+        : new List<TaskItem>();
+
+    return Results.Ok(new { mine, open, others });
 });
 
 app.MapGet("/api/dashboard", async (EngineDb db, CancellationToken ct) =>
@@ -183,9 +220,31 @@ app.MapGet("/api/dashboard", async (EngineDb db, CancellationToken ct) =>
             g.Key.ProcessName,
             total = g.Sum(x => x.Count),
             byStatus = g.ToDictionary(x => x.Status, x => x.Count)
-        });
+        }).ToList();
 
-    return Results.Ok(new { total = rows.Sum(r => r.Count), byStatus, byProcess });
+    var today = DateTime.UtcNow.Date;
+    var since = today.AddDays(-13);
+    var created = await db.Instances.AsNoTracking()
+        .Where(i => i.CreatedAt >= since).Select(i => i.CreatedAt).ToListAsync(ct);
+    var perDay = Enumerable.Range(0, 14).Select(n => since.AddDays(n))
+        .Select(d => new { date = d.ToString("yyyy-MM-dd"), count = created.Count(c => c.Date == d) }).ToList();
+
+    var from30 = today.AddDays(-30);
+    var done = await db.Instances.AsNoTracking()
+        .Where(i => i.Status == InstanceStatus.Completed && i.CompletedAt != null && i.CompletedAt >= from30)
+        .Select(i => new { i.CreatedAt, i.CompletedAt }).ToListAsync(ct);
+    double? avgHours = done.Count == 0 ? null
+        : Math.Round(done.Average(x => (x.CompletedAt!.Value - x.CreatedAt).TotalHours), 1);
+
+    return Results.Ok(new
+    {
+        total = rows.Sum(r => r.Count),
+        byStatus,
+        byProcess,
+        perDay,
+        avgHours,
+        completed30 = done.Count
+    });
 });
 
 // ------------------------------------------------------------ poll now (for testing)

@@ -48,6 +48,7 @@ public class EngineDb : DbContext
             e.HasIndex(x => x.Status);
             e.HasMany(x => x.Approvals).WithOne(a => a.Step)
                 .HasForeignKey(a => a.StepInstanceId).OnDelete(DeleteBehavior.Cascade);
+            e.Property(x => x.Assignees).HasColumnName("ASSIGNEES").HasMaxLength(2000);
         });
 
         b.Entity<StepApproval>(e =>

@@ -11,12 +11,13 @@ public class WorkflowEngine
     private readonly EngineDb _db;
     private readonly DefinitionClient _defs;
     private readonly Dictionary<string, IStepHandler> _handlers;
+    private readonly TaskMailer _tasks;
     private readonly ILogger<WorkflowEngine> _log;
 
     public WorkflowEngine(EngineDb db, DefinitionClient defs,
-        IEnumerable<IStepHandler> handlers, ILogger<WorkflowEngine> log)
+        IEnumerable<IStepHandler> handlers, TaskMailer tasks, ILogger<WorkflowEngine> log)
     {
-        _db = db; _defs = defs; _log = log;
+        _db = db; _defs = defs; _tasks = tasks; _log = log;
         _handlers = handlers.ToDictionary(h => h.Type);
     }
 
@@ -82,6 +83,14 @@ public class WorkflowEngine
         if (step.Status != StepState.InProgress)
             throw new EngineException(409, "This step is not waiting for input.");
 
+        if (step.StepType is StepTypes.Form or StepTypes.Upload)
+        {
+            var assigned = TaskMailer.Split(step.Assignees);
+            if (assigned.Count > 0 && !action.IsAdmin &&
+                !assigned.Contains((action.By ?? "").Trim().ToLowerInvariant()))
+                throw new EngineException(403, "This task is assigned to other people.");
+        }
+
         var def = ReadDefinition(inst);
         var sd = def.Steps.First(s => s.Key == stepKey);
         var data = DataBag.FromJson(inst.DataJson);
@@ -115,6 +124,44 @@ public class WorkflowEngine
         inst.Status = InstanceStatus.Cancelled;
         inst.CompletedAt = DateTime.UtcNow;
         await SaveAsync(inst, ct);
+    }
+
+    public async Task ReassignAsync(Guid id, string stepKey, IEnumerable<string> raw, string? by, CancellationToken ct)
+    {
+        var inst = await LoadAsync(id, ct);
+        if (inst.Status != InstanceStatus.Running)
+            throw new EngineException(409, $"This request is {inst.Status} and cannot be changed.");
+
+        var step = inst.Steps.FirstOrDefault(s => s.StepKey == stepKey)
+                   ?? throw new EngineException(404, $"Step '{stepKey}' was not found.");
+        if (step.Status != StepState.InProgress)
+            throw new EngineException(409, "Only a step that is waiting can be assigned.");
+
+        var list = TaskMailer.Parse(raw);
+        if (list.Count == 0)
+            throw new EngineException(400, "Choose at least one person (a valid email address).");
+
+        switch (step.StepType)
+        {
+            case StepTypes.Approval:
+                // while the step waits nobody has decided yet (one approval completes it, one rejection ends it)
+                foreach (var old in step.Approvals.Where(a => a.Decision == null).ToList())
+                    _db.Approvals.Remove(old);
+                foreach (var a in list)
+                    step.Approvals.Add(new StepApproval { StepInstanceId = step.Id, Approver = a });
+                break;
+
+            case StepTypes.Form:
+            case StepTypes.Upload:
+                step.Assignees = TaskMailer.Join(list);
+                break;
+
+            default:
+                throw new EngineException(400, "This kind of step has nobody to assign.");
+        }
+
+        await SaveAsync(inst, ct);
+        await _tasks.NotifyAsync(inst, step, list, by, ct);     // after the change is saved
     }
 
     // ---------------------------------------------------------------- core loop

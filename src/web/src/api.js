@@ -67,3 +67,8 @@ export async function downloadFile(id, name) {
     a.remove();
     URL.revokeObjectURL(url);
 }
+export async function fetchDocumentBlob(id) {
+    const res = await fetch(`/api/documents/${id}/download`, { headers: authHeaders() });
+    if (!res.ok) await handle(res);
+    return res.blob();
+}

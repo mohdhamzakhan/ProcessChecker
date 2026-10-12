@@ -3,9 +3,10 @@ import { api } from "../api";
 import { DropZone, FIELD_MIME, endDrag, startDrag } from "./dnd";
 import {
     FIELD_ORDER, FIELD_TYPES, STEP_TYPES, availableFields, isEmail, isPlaceholder,
-    newField, slugKey, slugName, unique,
+    newField, slugKey, slugName, unique, placeholderNames
 } from "./model";
 import Icon from "./Icon";
+import UserPicker from "../UserPicker";
 
 const queryHint = (type) =>
     type === "Json" ? "JSONPath, for example $.requests[?(@.status=='new')]"
@@ -130,13 +131,25 @@ function SchemaSelect({ connection, value, onChange, fields = [] }) {
     );
 }
 
+const PARAM = /(?<!:):([A-Za-z_]\w*)/g;
+const paramNames = (q) =>
+    [...new Set([...(q || "").replace(/'(?:[^']|'')*'/g, "''").matchAll(PARAM)].map((m) => m[1]))];
+
 function TestQuery({ connection, schema, query, onColumns }) {
     const [res, setRes] = useState(null);
+    const [sample, setSample] = useState("");
+    const names = paramNames(query);
 
     const run = async () => {
+        let parameters;
+        if (names.length && sample.trim()) {
+            try { parameters = JSON.parse(sample); }
+            catch { setRes({ error: "The sample values are not valid JSON." }); return; }
+        }
         setRes({ busy: true });
         try {
             const body = { query, maxRows: 5 };
+            if (parameters) body.parameters = parameters;
             if (schema && !schema.includes("{{")) body.schema = schema;
             const r = await api.post(`/api/connections/${encodeURIComponent(connection)}/query`, body);
             onColumns(r.columns);
@@ -148,6 +161,12 @@ function TestQuery({ connection, schema, query, onColumns }) {
 
     return (
         <div className="testq">
+            {names.length > 0 && (
+                <label style={{ width: "100%" }}>
+                    <span>Sample values for {names.map((n) => `:${n}`).join(", ")} (JSON, for testing only)</span>
+                    <input value={sample} placeholder={`{"${names[0]}": "R-1001"}`} onChange={(e) => setSample(e.target.value)} />
+                </label>
+            )}
             <button type="button" className="secondary" disabled={res?.busy} onClick={run}>
                 {res?.busy ? "Testing..." : "Test query"}
             </button>
@@ -158,9 +177,6 @@ function TestQuery({ connection, schema, query, onColumns }) {
                 </div>
             )}
             {res?.error && <div className="field-err">{res.error}</div>}
-            {res && !res.busy && !res.error && (
-                <p className="muted small">A query with :parameters cannot be tested here, because the values only exist at run time.</p>
-            )}
         </div>
     );
 }
@@ -282,6 +298,38 @@ function FieldBuilder({ fields, onChange }) {
         </div>
     );
 }
+function LinkHint({ url, fields }) {
+    const known = new Set(fields.map((f) => f.name.toLowerCase()));
+    const names = placeholderNames(url, known);
+    const unknown = names.filter((n) => !known.has(n.toLowerCase()) && !n.includes("."));
+    const text = (url || "").trim();
+    const hostOk = /^https?:\/\/[^/?#{}\s]+(?=[/?#]|$)/i.test(text);
+
+    return (
+        <div className="sect">
+            {text && !hostOk && (
+                <div className="field-err">Start with http:// or https:// and a fixed server name (no {"{{ }}"} in the server part).</div>
+            )}
+            {names.length > 0 && (
+                <div>
+                    <span className="muted small">Values used: </span>
+                    {names.map((n) => (
+                        <code key={n} style={unknown.includes(n) ? { background: "#fef3c7" } : undefined}>{n}</code>
+                    ))}
+                </div>
+            )}
+            {unknown.length > 0 && (
+                <div className="field-err">
+                    Not collected before this step: {unknown.join(", ")}. Move this step later, or fix the name.
+                </div>
+            )}
+            <p className="muted small">
+                Use <code>{"{{id}}"}</code> for a value, and <code>{"{{id+1}}"}</code> or <code>{"{{id-2}}"}</code> to add or subtract a whole number. Pick a field with “Insert field…”, then type the +1 yourself.
+                If a value is missing when the request runs, the step fails with a clear message and can be retried.
+            </p>
+        </div>
+    );
+}
 
 // ---------------------------------------------------------------- panels
 export function ProcessProps({ state, change, connections }) {
@@ -371,9 +419,20 @@ export function StepProps({ step, index, state, change, connections }) {
             <div className="form">
                 <label><span>Step name</span>
                     <input value={step.name} onChange={(e) => patch({ name: e.target.value })} /></label>
-
+                {step.type === "Upload" && (
+                    <p className="muted">The person uploads a file here (PDF, image, Word, Excel, CSV or text, up to 20 MB). The request waits until a file is uploaded.</p>
+                )}
                 {step.type === "Form" && (
                     <>
+                        {(step.type === "Form" || step.type === "Upload") && (
+                            <div className="sect">
+                                <h5>Who does this?</h5>
+                                <UserPicker value={step.assignees} onChange={(a) => patch({ assignees: a })} fields={fields} />
+                                <p className="muted small">
+                                    Leave empty to let anyone open it. Assigned people get an email and see it under My Tasks.
+                                </p>
+                            </div>
+                        )}
                         <FieldBuilder fields={step.fields} onChange={(f) => patch({ fields: f })} />
                         <label className="inline">
                             <input type="checkbox" checked={step.allowUpload} onChange={(e) => patch({ allowUpload: e.target.checked })} />
@@ -386,7 +445,7 @@ export function StepProps({ step, index, state, change, connections }) {
                 {step.type === "Approval" && (
                     <>
                         <label><span>Who can approve?</span></label>
-                        <ApproverEditor value={step.approvers} onChange={(a) => patch({ approvers: a })} fields={fields} />
+                        <UserPicker value={step.approvers} onChange={(a) => patch({ approvers: a })} fields={fields} />
                         <p className="muted small">Everyone listed gets an email. One approval completes the step; one rejection stops the request.</p>
                     </>
                 )}
@@ -407,10 +466,24 @@ export function StepProps({ step, index, state, change, connections }) {
                     </>
                 )}
 
+
                 {step.type === "Upload" && (
                     <p className="muted">The person uploads a file here (PDF, image, Word, Excel, CSV or text, up to 20 MB), for example a booking confirmation. The request waits until a file is uploaded.</p>
                 )}
-
+                {step.type === "Link" && (
+                    <>
+                        <label><span>Link text</span>
+                            <PlaceholderInput value={step.linkLabel} onChange={(v) => patch({ linkLabel: v })} fields={fields}
+                                placeholder="Open the report" /></label>
+                        <label><span>Link address (URL)</span>
+                            <PlaceholderInput multiline rows={4} value={step.url} onChange={(v) => patch({ url: v })} fields={fields}
+                                placeholder="https://google.com" /></label>
+                        <LinkHint url={step.url} fields={fields} />
+                        <p className="muted small">
+                            Later steps can use this link as <code>{`{{${step.key}.url}}`}</code>, for example in an email.
+                        </p>
+                    </>
+                )}
                 {step.type === "DataFetch" && (
                     <>
                         <label><span>Data source</span>

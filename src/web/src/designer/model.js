@@ -7,15 +7,17 @@ export const STEP_TYPES = {
     Upload: { label: "Upload file", icon: "upload", color: "#d97706", hint: "Person uploads a confirmation" },
     DataFetch: { label: "Fetch data", icon: "database", color: "#0891b2", hint: "Read rows from a database" },
     Notify: { label: "Notify", icon: "bell", color: "#e11d48", hint: "Send an email notice" },
+    Link: { label: "Document link", icon: "link", color: "#0d9488", hint: "Build a link to a file or page" },
 };
 
-export const STEP_ORDER = ["Form", "Approval", "Dispatch", "Upload", "DataFetch", "Notify"];
+export const STEP_ORDER = ["Form", "Approval", "Dispatch", "Upload", "DataFetch", "Notify", "Link"];
 
 export const STEP_GROUPS = [
     { label: "Collect", types: ["Form", "Upload"] },
     { label: "Decide", types: ["Approval"] },
     { label: "Communicate", types: ["Dispatch", "Notify"] },
     { label: "Data", types: ["DataFetch"] },
+    { label: "Documents", types: ["Link"] },
 ];
 
 
@@ -59,7 +61,7 @@ export function newStep(type, steps) {
     const key = unique(slugKey(name) || "step", new Set(steps.map((s) => s.key)));
     const st = {
         uid: uid(), key, name, type, approvers: [], fields: [], allowUpload: false,
-        sendTo: "", subject: "", body: "", connection: "", schema: "", query: "", columns: [],
+        sendTo: "", subject: "", body: "", url: "", linkLabel: "", connection: "", schema: "", query: "", columns: [], assignees: []
     };
     if (type === "Form") st.fields = [newField("text", [])];
     return st;
@@ -86,7 +88,9 @@ export function fromDefinition(def) {
             uid: uid(), key: s.key, name: s.name, type: s.type,
             approvers: s.approvers || [], allowUpload: !!s.allowUpload,
             sendTo: s.sendTo || "", subject: s.subject || "", body: s.body || "",
+            url: s.url || "", linkLabel: s.linkLabel || "",
             connection: s.connection || "", schema: s.schema || "", query: s.query || "", columns: [],
+            assignees: s.assignees || [],
             fields: (s.fields || []).map((f) => ({
                 uid: uid(), name: f.name, label: f.label || f.name, type: f.type || "text",
                 required: !!f.required, options: f.options || [], nameAuto: false,
@@ -113,6 +117,7 @@ export function toDefinition(s) {
             case "Form":
                 return {
                     ...base, allowUpload: !!st.allowUpload,
+                    assignees: st.assignees,
                     fields: st.fields.map((f) => ({
                         name: f.name, label: f.label, type: f.type, required: !!f.required,
                         options: f.type === "select" ? f.options.map((o) => o.trim()).filter(Boolean) : [],
@@ -123,6 +128,10 @@ export function toDefinition(s) {
                 return { ...base, sendTo: st.sendTo, subject: st.subject || undefined, body: st.body || undefined };
             case "DataFetch":
                 return { ...base, connection: st.connection, schema: st.schema || undefined, query: st.query };
+            case "Link":
+                return { ...base, url: st.url.trim(), linkLabel: st.linkLabel || undefined };
+            case "Upload":
+                return { ...base, assignees: st.assignees };
             default:
                 return base;
         }
@@ -162,7 +171,8 @@ export function stepIssues(st, all) {
     if (!st.name.trim()) out.push("Give this step a name.");
     if (!KEY.test(st.key)) out.push("The step key may only contain a-z, 0-9 and '-'.");
     else if (all.filter((x) => x.key === st.key).length > 1) out.push("Another step has the same key.");
-
+    const badWho = (st.assignees || []).filter((a) => !(isEmail(a) || isPlaceholder(a)));
+    if (badWho.length) out.push(`Not an email or {{field}}: ${badWho.join(", ")}.`);
     switch (st.type) {
         case "Form": {
             if (st.fields.length === 0) out.push("Add at least one field.");
@@ -193,11 +203,30 @@ export function stepIssues(st, all) {
             if (!st.query.trim()) out.push("Write the query.");
             if (st.schema && !SCHEMA.test(st.schema) && !PLACE.test(st.schema)) out.push("The schema name is not valid.");
             break;
+        case "Link":
+            if (!st.url.trim()) out.push("Write the link address.");
+            else if (!/^https?:\/\/[^/?#{}\s]+(?=[/?#]|$)/i.test(st.url.trim()))
+                out.push("The address must start with http:// or https:// and a fixed server name.");
+            break;
         default:
     }
     return out;
 }
-
+/** The names used inside {{ }} in a text, with any "+1" or "-2" removed. */
+export function placeholderNames(text, known) {
+    const out = [];
+    const re = /\{\{\s*([^{}]+?)\s*\}\}/g;
+    let m;
+    while ((m = re.exec(text || "")) !== null) {
+        let token = m[1].trim();
+        if (!known.has(token.toLowerCase())) {
+            const a = /^([\w.\-]+?)\s*[+-]\s*\d+$/.exec(token);
+            if (a) token = a[1];
+        }
+        if (!out.includes(token)) out.push(token);
+    }
+    return out;
+}
 export function allIssues(state) {
     const out = [];
     const p = (text) => out.push({ scope: "process", text });

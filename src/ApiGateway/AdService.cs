@@ -1,5 +1,7 @@
-﻿using System.DirectoryServices.Protocols;
-using System.Net;
+﻿using Microsoft.AspNetCore.Authentication;
+using System.DirectoryServices;
+using System.DirectoryServices.AccountManagement;
+using System.Runtime.InteropServices;
 using System.Text;
 
 namespace ApiGateway;
@@ -7,19 +9,16 @@ namespace ApiGateway;
 public class AdOptions
 {
     public bool Enabled { get; set; }
-    public string Server { get; set; } = "";
-    public int Port { get; set; } = 636;
-    public bool UseSsl { get; set; } = true;
-    public string AuthType { get; set; } = "Basic";      // Basic (with SSL) or Negotiate (Windows)
-    public string Domain { get; set; } = "";             // NetBIOS name, e.g. CORP
-    public string UpnSuffix { get; set; } = "";          // e.g. company.com
-    public string BaseDn { get; set; } = "";             // where users are searched
-    public string AllowedGroupDn { get; set; } = "";     // optional: only members may sign in
-    public string AdminGroupDn { get; set; } = "";       // optional: members become Admin
-    public int TimeoutSeconds { get; set; } = 10;
+    public string Domain { get; set; } = "";                              // same value as ADSettings:Domain in your other app
+    public string[] AdminGroups { get; set; } = Array.Empty<string>();    // group names (sAMAccountName) that make someone Admin
+    public string[] AllowedGroups { get; set; } = Array.Empty<string>();  // empty = every domain user may sign in
+    public string? Container { get; set; }                                // optional, limits the people search, e.g. OU=Staff,DC=corp,DC=com
+    public string? ServiceUser { get; set; }                              // optional: account used for the people search only
+    public string? ServicePassword { get; set; }
 }
 
 public record AdUser(string Email, string DisplayName, bool IsAdmin);
+public record DirectoryPerson(string Email, string Name, string Username);
 
 public class AdUnavailableException : Exception
 {
@@ -34,10 +33,10 @@ public class AdService
     public AdService(AdOptions options, ILogger<AdService> log)
     {
         _o = options; _log = log;
-        if (_o.Enabled && (string.IsNullOrWhiteSpace(_o.Server) || string.IsNullOrWhiteSpace(_o.BaseDn)))
-            throw new InvalidOperationException("Ad:Server and Ad:BaseDn are required when Ad:Enabled is true.");
-        if (_o.Enabled && !_o.UseSsl && _o.AuthType.Equals("Basic", StringComparison.OrdinalIgnoreCase))
-            _log.LogWarning("AD is using Basic bind WITHOUT SSL: passwords travel unencrypted. Use LDAPS (port 636).");
+        if (_o.Enabled && string.IsNullOrWhiteSpace(_o.Domain))
+            throw new InvalidOperationException("Ad:Domain is required when Ad:Enabled is true.");
+        if (_o.Enabled && !OperatingSystem.IsWindows())
+            throw new InvalidOperationException("AD sign-in with PrincipalContext works only when the gateway runs on Windows.");
     }
 
     public bool Enabled => _o.Enabled;
@@ -46,100 +45,127 @@ public class AdService
     public AdUser? Authenticate(string username, string password)
     {
         if (!_o.Enabled) return null;
-        // An empty password makes many LDAP servers treat the bind as anonymous and succeed
+        // A blank password can turn into an anonymous bind that "succeeds", so refuse it up front
         if (string.IsNullOrWhiteSpace(username) || string.IsNullOrEmpty(password)) return null;
 
-        var (bindName, attr, value) = Normalize(username);
-
-        using var conn = Connect();
-        try
-        {
-            conn.Bind(new NetworkCredential(bindName, password));
-        }
-        catch (LdapException ex) when (ex.ErrorCode == 49)      // invalid credentials / locked / disabled / expired
-        {
-            return null;
-        }
-        catch (Exception ex) when (ex is LdapException or DirectoryOperationException)
-        {
-            throw new AdUnavailableException("The directory server could not be reached.", ex);
-        }
+        var typed = username.Trim();
+        var sam = typed.Contains('\\') ? typed[(typed.IndexOf('\\') + 1)..] : typed;
 
         try
         {
-            var filter = $"(&(objectCategory=person)(objectClass=user)({attr}={Escape(value)}))";
-            var res = (SearchResponse)conn.SendRequest(new SearchRequest(
-                _o.BaseDn, filter, SearchScope.Subtree, "mail", "displayName", "userPrincipalName"));
+            using var ctx = new PrincipalContext(ContextType.Domain, _o.Domain);
+            if (!ctx.ValidateCredentials(typed, password)) return null;
 
-            if (res.Entries.Count != 1)
+            using var user = UserPrincipal.FindByIdentity(ctx, sam);
+            if (user == null)
             {
-                _log.LogInformation("AD user {User} authenticated but was not found under {Base}.", username, _o.BaseDn);
+                _log.LogInformation("{User} authenticated but was not found in the directory.", typed);
                 return null;
             }
 
-            var entry = res.Entries[0];
-            if (!string.IsNullOrWhiteSpace(_o.AllowedGroupDn) && !InGroup(conn, entry.DistinguishedName, _o.AllowedGroupDn))
+            HashSet<string>? groups = null;
+            if (_o.AdminGroups.Length > 0 || _o.AllowedGroups.Length > 0) groups = GroupNames(user);
+
+            if (_o.AllowedGroups.Length > 0 && !_o.AllowedGroups.Any(g => groups!.Contains(g)))
             {
-                _log.LogInformation("AD user {User} is not in the allowed group.", username);
+                _log.LogInformation("{User} is not in an allowed group.", typed);
                 return null;
             }
 
-            var email = Read(entry, "mail") ?? Read(entry, "userPrincipalName");
-            if (string.IsNullOrWhiteSpace(email))
+            var email = (user.EmailAddress ?? user.UserPrincipalName ?? "").Trim().ToLowerInvariant();
+            if (email.Length == 0)
             {
-                _log.LogWarning("AD user {User} has neither mail nor userPrincipalName.", username);
-                return null;
+                email = $"{user.SamAccountName}@{_o.Domain}".ToLowerInvariant();
+                _log.LogWarning("{User} has no mail attribute; using {Email}. Emails to this address may not arrive.", typed, email);
             }
 
-            var name = Read(entry, "displayName") ?? email;
-            var isAdmin = !string.IsNullOrWhiteSpace(_o.AdminGroupDn) && InGroup(conn, entry.DistinguishedName, _o.AdminGroupDn);
-            return new AdUser(email.Trim().ToLowerInvariant(), name, isAdmin);
+            var name = user.DisplayName ?? user.Name ?? email;
+            var isAdmin = groups != null && _o.AdminGroups.Any(g => groups.Contains(g));
+            return new AdUser(email, name, isAdmin);
         }
-        catch (Exception ex) when (ex is LdapException or DirectoryOperationException)
+        catch (PrincipalException ex)
         {
-            throw new AdUnavailableException("The directory search failed. Check Ad:BaseDn and the group names.", ex);
+            throw new AdUnavailableException("The company directory could not be reached.", ex);
+        }
+        catch (COMException ex)
+        {
+            throw new AdUnavailableException("The company directory could not be reached.", ex);
         }
     }
 
-    private LdapConnection Connect()
+    /// People search for the "assign to" picker. Skips disabled accounts and accounts without an email.
+    public List<DirectoryPerson> Search(string term, int max = 15)
     {
-        var conn = new LdapConnection(new LdapDirectoryIdentifier(_o.Server, _o.Port))
+        if (!_o.Enabled) return new();
+        term = term.Trim();
+        if (term.Length < 2) return new();
+
+        var t = Escape(term);
+        var filter =
+            "(&(objectCategory=person)(objectClass=user)(!(userAccountControl:1.2.840.113556.1.4.803:=2))" +
+            $"(|(displayName=*{t}*)(sAMAccountName={t}*)(mail={t}*)(givenName={t}*)(sn={t}*)))";
+
+        var path = string.IsNullOrWhiteSpace(_o.Container)
+            ? $"LDAP://{_o.Domain}"
+            : $"LDAP://{_o.Domain}/{_o.Container}";
+
+        try
         {
-            AuthType = _o.AuthType.Equals("Negotiate", StringComparison.OrdinalIgnoreCase)
-                ? System.DirectoryServices.Protocols.AuthType.Negotiate
-                : System.DirectoryServices.Protocols.AuthType.Basic,
-            Timeout = TimeSpan.FromSeconds(_o.TimeoutSeconds)
-        };
-        conn.SessionOptions.ProtocolVersion = 3;
-        conn.SessionOptions.SecureSocketLayer = _o.UseSsl;
-        conn.SessionOptions.ReferralChasing = ReferralChasingOptions.None;
-        return conn;
+            using var root = string.IsNullOrWhiteSpace(_o.ServiceUser)
+                ? new DirectoryEntry(path)
+                : new DirectoryEntry(path, _o.ServiceUser, _o.ServicePassword);
+
+            using var searcher = new DirectorySearcher(root, filter,
+                new[] { "displayName", "sAMAccountName", "mail", "userPrincipalName" }, SearchScope.Subtree)
+            {
+                SizeLimit = max,
+                ServerTimeLimit = TimeSpan.FromSeconds(10),
+                ClientTimeout = TimeSpan.FromSeconds(15)
+            };
+
+            var list = new List<DirectoryPerson>();
+            using var results = searcher.FindAll();
+            foreach (SearchResult r in results)
+            {
+                var sam = Prop(r, "samaccountname");
+                var email = (Prop(r, "mail") ?? Prop(r, "userprincipalname") ?? "").Trim().ToLowerInvariant();
+                if (email.Length == 0 || sam == null) continue;
+                list.Add(new DirectoryPerson(email, Prop(r, "displayname") ?? sam, sam));
+            }
+            return list.OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase).ToList();
+        }
+        catch (Exception ex) when (ex is COMException or InvalidOperationException)
+        {
+            throw new AdUnavailableException("The directory search failed: " + ex.Message, ex);
+        }
     }
 
-    // Nested groups are included (LDAP_MATCHING_RULE_IN_CHAIN)
-    private bool InGroup(LdapConnection conn, string userDn, string groupDn)
+    private HashSet<string> GroupNames(UserPrincipal user)
     {
-        var filter = $"(&(distinguishedName={Escape(userDn)})(memberOf:1.2.840.113556.1.4.1941:={Escape(groupDn)}))";
-        var res = (SearchResponse)conn.SendRequest(
-            new SearchRequest(_o.BaseDn, filter, SearchScope.Subtree, "distinguishedName"));
-        return res.Entries.Count > 0;
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            // includes nested groups
+            foreach (var g in user.GetAuthorizationGroups())
+                if (!string.IsNullOrEmpty(g.SamAccountName)) set.Add(g.SamAccountName);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Reading all groups failed; falling back to direct groups.");
+            try
+            {
+                foreach (var g in user.GetGroups())
+                    if (!string.IsNullOrEmpty(g.SamAccountName)) set.Add(g.SamAccountName);
+            }
+            catch (Exception ex2) { _log.LogWarning(ex2, "Reading direct groups failed too."); }
+        }
+        return set;
     }
 
-    // jsmith -> CORP\jsmith; CORP\jsmith as typed; jsmith@company.com as typed
-    private (string Bind, string Attr, string Value) Normalize(string input)
-    {
-        var u = input.Trim();
-        if (u.Contains('\\')) return (u, "sAMAccountName", u[(u.IndexOf('\\') + 1)..]);
-        if (u.Contains('@')) return (u, "userPrincipalName", u);
-        if (!string.IsNullOrWhiteSpace(_o.Domain)) return ($"{_o.Domain}\\{u}", "sAMAccountName", u);
-        var upn = $"{u}@{_o.UpnSuffix}";
-        return (upn, "userPrincipalName", upn);
-    }
+    private static string? Prop(SearchResult r, string name) =>
+        r.Properties[name].Count > 0 ? r.Properties[name][0]?.ToString() : null;
 
-    private static string? Read(SearchResultEntry e, string attribute) =>
-        e.Attributes[attribute] is { Count: > 0 } a ? a[0]?.ToString() : null;
-
-    // RFC 4515 escaping so a typed username cannot change the filter
+    // RFC 4515 escaping, so typed text cannot change the LDAP filter
     private static string Escape(string s)
     {
         var sb = new StringBuilder();
