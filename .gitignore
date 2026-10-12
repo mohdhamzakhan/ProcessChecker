@@ -488,3 +488,4 @@ $RECYCLE.BIN/
 /src/NotificationService/appsettings.json
 /src/ConnectorService/appsettings.json
 /src/ApiGateway/appsettings.json
+/src/DocumentService/appsettings.json
