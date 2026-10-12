@@ -21,6 +21,7 @@ public class GatewayDb : DbContext
             e.Property(x => x.PasswordHash).HasMaxLength(300);
             e.Property(x => x.Role).HasMaxLength(20);
             e.HasIndex(x => x.Email).IsUnique();
+            e.Property(x => x.AuthSource).HasColumnName("AUTH_SOURCE").HasMaxLength(10);
         });
     }
 }

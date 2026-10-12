@@ -20,8 +20,8 @@ export default function Login() {
             <form className="panel form" onSubmit={submit}>
                 <h2>ProcessChecker</h2>
                 <ErrorBox error={error} />
-                <label><span>Email</span>
-                    <input type="email" autoFocus value={email} onChange={(e) => setEmail(e.target.value)} /></label>
+                <label><span>Email or username</span>
+                    <input type="text" autoFocus autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} /></label>
                 <label><span>Password</span>
                     <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} /></label>
                 <button disabled={busy || !email || !password}>{busy ? "Signing in..." : "Sign in"}</button>

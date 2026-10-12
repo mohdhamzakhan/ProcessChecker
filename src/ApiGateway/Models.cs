@@ -16,6 +16,14 @@ public class UserEntity
     public string Role { get; set; } = Roles.User;
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public static class AuthSources
+    {
+        public const string Local = "Local";
+        public const string Ad = "AD";
+    }
+
+    // inside UserEntity:
+    public string AuthSource { get; set; } = AuthSources.Local;
 }
 
 public record UserInfo(string Email, string Role, bool IsActive);

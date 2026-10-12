@@ -12,6 +12,7 @@ using System.Security.Claims;
 using System.Text;
 using System.Threading.RateLimiting;
 using Yarp.ReverseProxy.Transforms;
+using static ApiGateway.UserEntity;
 
 var builder = WebApplication.CreateBuilder(args);
 var cfg = builder.Configuration;
@@ -28,6 +29,9 @@ builder.WebHost.ConfigureKestrel(k => k.Limits.MaxRequestBodySize = 25 * 1024 * 
 builder.Services.AddMemoryCache();
 builder.Services.AddDbContext<GatewayDb>(o => o.UseOracle(cfg.GetConnectionString("Default")));
 builder.Services.AddSingleton<TokenService>();
+var adOptions = cfg.GetSection("Ad").Get<AdOptions>() ?? new AdOptions();
+builder.Services.AddSingleton(adOptions);
+builder.Services.AddSingleton<AdService>();
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(o =>
@@ -93,8 +97,9 @@ builder.Services.AddReverseProxy()
     .LoadFromConfig(cfg.GetSection("ReverseProxy"))
     .AddTransforms(ctx => ctx.AddRequestTransform(t =>
     {
-        var h = t.ProtocolRequest.Headers;
-        // Never trust identity headers from the browser, always rebuild them
+        var h = t.ProxyRequest.Headers;
+
+        // Never trust identity headers sent by the browser, always rebuild them
         h.Remove(InternalAuth.KeyHeader);
         h.Remove(InternalAuth.UserHeader);
         h.Remove(InternalAuth.RoleHeader);
@@ -150,6 +155,7 @@ static object Dto(UserEntity u) => new
     email = u.Email,
     displayName = u.DisplayName,
     role = u.Role,
+    authSource = u.AuthSource,
     isActive = u.IsActive,
     createdAt = u.CreatedAt
 };
@@ -157,11 +163,46 @@ static object Dto(UserEntity u) => new
 app.MapGet("/api/health", () => Results.Ok(new { status = "ok" }));
 
 // ---------------------------------------------------------------- login
-app.MapPost("/api/auth/login", async (LoginRequest req, GatewayDb db, TokenService tokens) =>
+app.MapPost("/api/auth/login", async (
+    LoginRequest req, GatewayDb db, TokenService tokens, AdService ad, AdOptions adOpt,
+    IMemoryCache cache, ILogger<Program> log) =>
 {
-    var email = (req.Email ?? "").Trim().ToLowerInvariant();
-    var user = await db.Users.FirstOrDefaultAsync(u => u.Email == email);
-    var ok = Passwords.Verify(req.Password ?? "", user?.PasswordHash);
+    var input = (req.Email ?? "").Trim();
+    var password = req.Password ?? "";
+    var key = input.ToLowerInvariant();
+
+    UserEntity? user = null;
+    var ok = false;
+
+    // 1. Local accounts first (the emergency admin, and anyone created as "local" in the Users page)
+    var local = await db.Users.FirstOrDefaultAsync(u => u.Email == key && u.AuthSource == AuthSources.Local);
+    if (local != null)
+    {
+        user = local;
+        ok = Passwords.Verify(password, local.PasswordHash);
+    }
+    else if (ad.Enabled)
+    {
+        // 2. Active Directory
+        AdUser? a;
+        try { a = await Task.Run(() => ad.Authenticate(input, password)); }
+        catch (AdUnavailableException ex)
+        {
+            log.LogError(ex, "Active Directory is not reachable");
+            return Results.Json(new { error = "The company directory is not reachable. Try again, or ask an admin." },
+                statusCode: 503);
+        }
+        if (a != null)
+        {
+            user = await UpsertAdUser(db, a, adOpt);
+            if (user != null) cache.Remove($"user:{user.Id}");
+            ok = user != null;
+        }
+    }
+    else
+    {
+        Passwords.Verify(password, null);      // same timing whether or not the user exists
+    }
 
     if (user is null || !ok || !user.IsActive)
         return Results.Json(new { error = "Invalid email or password." }, statusCode: 401);
@@ -175,6 +216,36 @@ app.MapPost("/api/auth/login", async (LoginRequest req, GatewayDb db, TokenServi
     });
 }).RequireRateLimiting("login");
 
+// Creates the user on first AD login. When Ad:AdminGroupDn is set, the role always follows that group.
+static async Task<UserEntity?> UpsertAdUser(GatewayDb db, AdUser a, AdOptions o)
+{
+    var user = await db.Users.FirstOrDefaultAsync(u => u.Email == a.Email);
+    if (user is null)
+    {
+        user = new UserEntity
+        {
+            Email = a.Email,
+            DisplayName = a.DisplayName,
+            PasswordHash = "!",   // no local password
+            AuthSource = AuthSources.Ad,
+            Role = a.IsAdmin ? Roles.Admin : Roles.User
+        };
+        db.Users.Add(user);
+    }
+    else if (user.AuthSource != AuthSources.Ad)
+    {
+        return null;     // the same email belongs to a local account: refuse instead of taking it over
+    }
+    else
+    {
+        user.DisplayName = a.DisplayName;
+        if (!string.IsNullOrWhiteSpace(o.AdminGroupDn))
+            user.Role = a.IsAdmin ? Roles.Admin : Roles.User;
+    }
+    await db.SaveChangesAsync();
+    return user;
+}
+
 app.MapGet("/api/auth/me", (ClaimsPrincipal u) => Results.Ok(new
 {
     email = u.FindFirst("email")?.Value,
@@ -184,8 +255,11 @@ app.MapGet("/api/auth/me", (ClaimsPrincipal u) => Results.Ok(new
 
 app.MapPost("/api/auth/change-password", async (ClaimsPrincipal u, ChangePasswordRequest r, GatewayDb db) =>
 {
+
     var user = await db.Users.FindAsync(Guid.Parse(u.FindFirst("sub")!.Value));
     if (user is null) return Results.NotFound();
+    if (user.AuthSource == AuthSources.Ad)
+        return Results.BadRequest(new { error = "Your password is managed by your company directory." });
     if (!Passwords.Verify(r.CurrentPassword ?? "", user.PasswordHash))
         return Results.BadRequest(new { error = "Your current password is wrong." });
     if (Passwords.Validate(r.NewPassword) is { } problem)
@@ -238,6 +312,8 @@ admin.MapPatch("/{id:guid}", async (
     var isSelf = string.Equals(me.FindFirst("sub")?.Value, id.ToString(), StringComparison.OrdinalIgnoreCase);
     if (isSelf && (r.IsActive == false || (r.Role != null && r.Role != user.Role)))
         return Results.BadRequest(new { error = "You cannot disable or demote yourself." });
+    if (r.NewPassword != null && user.AuthSource == AuthSources.Ad)
+        return Results.BadRequest(new { error = "This user signs in with Active Directory." });
 
     if (r.Role != null)
     {
