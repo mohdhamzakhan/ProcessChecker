@@ -484,3 +484,7 @@ $RECYCLE.BIN/
 *.swp
 /src/DefinitionService/appsettings.json
 "keys/" 
+/src/EngineService/appsettings.json
+/src/NotificationService/appsettings.json
+/src/ConnectorService/appsettings.json
+/src/ApiGateway/appsettings.json
