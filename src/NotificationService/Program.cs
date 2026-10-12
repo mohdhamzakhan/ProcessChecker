@@ -41,6 +41,9 @@ using (var scope = app.Services.CreateScope())
     catch (OracleException ex) when (ex.Number == 955) { /* table already exists */ }
 
     var o = scope.ServiceProvider.GetRequiredService<SmtpOptions>();
+
+    if (!MimeKit.MailboxAddress.TryParse(o.FromEmail, out _))
+        throw new InvalidOperationException($"Smtp:FromEmail '{o.FromEmail}' is not a valid email address.");
     app.Logger.LogInformation("Email mode: {Mode} (host {Host}:{Port})",
         o.DryRun ? "DRY RUN, nothing is sent" : "LIVE", o.Host, o.Port);
 }

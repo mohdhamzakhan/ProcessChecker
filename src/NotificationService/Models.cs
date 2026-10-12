@@ -24,12 +24,13 @@ public class NotificationLog
 public class SmtpOptions
 {
     public string Host { get; set; } = "localhost";
-    public int Port { get; set; } = 587;
-    public string Security { get; set; } = "StartTls";   // StartTls | SslOnConnect | None | Auto
+    public int Port { get; set; } = 25;
     public string? Username { get; set; }
     public string? Password { get; set; }
-    public string FromAddress { get; set; } = "noreply@example.com";
+    public string FromEmail { get; set; } = "noreply@example.com";
     public string FromName { get; set; } = "ProcessChecker";
+    public bool EnableSsl { get; set; }                  // false = plain connection, true = encrypted
+    public string? Security { get; set; }                // optional override: None | StartTls | SslOnConnect | Auto
     public int TimeoutSeconds { get; set; } = 30;
     public bool DryRun { get; set; }
     public string[] AllowedDomains { get; set; } = Array.Empty<string>();   // empty = allow all

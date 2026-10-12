@@ -77,7 +77,7 @@ public class EmailService
     private async Task TransmitAsync(NotificationLog log, CancellationToken ct)
     {
         var msg = new MimeMessage();
-        msg.From.Add(new MailboxAddress(_o.FromName, _o.FromAddress));
+        msg.From.Add(new MailboxAddress(_o.FromName, _o.FromEmail));
         foreach (var a in log.ToList.Split(';', StringSplitOptions.RemoveEmptyEntries))
             msg.To.Add(MailboxAddress.Parse(a));
         msg.Subject = log.Subject;
@@ -86,9 +86,14 @@ public class EmailService
         if (log.IsHtml) builder.HtmlBody = log.Body; else builder.TextBody = log.Body;
         msg.Body = builder.ToMessageBody();
 
-        var security = Enum.TryParse<SecureSocketOptions>(_o.Security, true, out var s)
-            ? s
-            : SecureSocketOptions.StartTls;
+        SecureSocketOptions security;
+        if (!string.IsNullOrWhiteSpace(_o.Security) &&
+            Enum.TryParse<SecureSocketOptions>(_o.Security, true, out var forced))
+            security = forced;                                   // an explicit override wins
+        else if (!_o.EnableSsl)
+            security = SecureSocketOptions.None;                 // your setting: EnableSsl false
+        else
+            security = _o.Port == 465 ? SecureSocketOptions.SslOnConnect : SecureSocketOptions.StartTls;
 
         using var client = new SmtpClient { Timeout = _o.TimeoutSeconds * 1000 };
         await client.ConnectAsync(_o.Host, _o.Port, security, ct);
