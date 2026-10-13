@@ -58,6 +58,9 @@ public class WorkflowEngine
             DataJson = data.ToJson()
         };
 
+        var observers = TaskMailer.Parse(def.Observers.Select(o => data.Render(o)));
+        inst.Observers = TaskMailer.Join(observers);
+
         var order = 0;
         foreach (var s in def.Steps)
             inst.Steps.Add(new StepInstance { StepKey = s.Key, StepName = s.Name, StepType = s.Type, OrderNo = order++ });
@@ -65,9 +68,11 @@ public class WorkflowEngine
         _db.Instances.Add(inst);
         if (sourceKey != null)
             _db.TriggerSeenRows.Add(new TriggerSeen { ProcessKey = info.Key, SourceKey = sourceKey, InstanceId = inst.Id });
+        await SyncParticipantsAsync(inst, ct);
         await _db.SaveChangesAsync(ct);
 
         await AdvanceAsync(inst, def, data, ct);
+        await _tasks.NotifyObserversAsync(inst, observers, startedBy, ct);
         return inst;
     }
 
@@ -250,10 +255,41 @@ public class WorkflowEngine
     private async Task SaveAsync(ProcessInstance inst, CancellationToken ct)
     {
         inst.RowVer++;
-        try { await _db.SaveChangesAsync(ct); }
+        try
+        {
+            await SyncParticipantsAsync(inst, ct);
+            await _db.SaveChangesAsync(ct);
+        }
         catch (DbUpdateConcurrencyException)
         {
             throw new EngineException(409, "Someone else just changed this request. Reload and try again.");
         }
+    }
+
+    /// Adds a row for everyone who now takes part in the request (never removes: past assignees keep access).
+    private async Task SyncParticipantsAsync(ProcessInstance inst, CancellationToken ct)
+    {
+        var rows = await _db.Participants.Where(p => p.InstanceId == inst.Id)
+            .Select(p => new { p.Email, p.Role }).ToListAsync(ct);
+        var have = rows.Select(r => r.Email + "|" + r.Role).ToHashSet();
+
+        foreach (var (email, role) in ParticipantRules.Wanted(inst).Distinct())
+            if (have.Add(email + "|" + role))
+                _db.Participants.Add(new Participant { InstanceId = inst.Id, Email = email, Role = role });
+    }
+
+    public async Task SetObserversAsync(Guid id, IEnumerable<string> raw, string? by, CancellationToken ct)
+    {
+        var inst = await LoadAsync(id, ct);
+        var list = TaskMailer.Parse(raw);
+        var added = list.Except(TaskMailer.Split(inst.Observers)).ToList();
+        inst.Observers = TaskMailer.Join(list);
+
+        var current = await _db.Participants
+            .Where(p => p.InstanceId == id && p.Role == PartRole.Observer).ToListAsync(ct);
+        _db.Participants.RemoveRange(current.Where(p => !list.Contains(p.Email)));
+
+        await SaveAsync(inst, ct);
+        await _tasks.NotifyObserversAsync(inst, added, by, ct);
     }
 }

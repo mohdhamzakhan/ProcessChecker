@@ -399,6 +399,15 @@ export function ProcessProps({ state, change, connections }) {
                         </>
                     )}
                 </div>
+
+                <div className="sect">
+                    <h5>Who can observe?</h5>
+                    <UserPicker value={state.observers || []} fields={availableFields(state, 0)}
+                        onChange={(observers) => change((s) => ({ ...s, observers }))} />
+                    <p className="muted small">
+                        Observers can open every request of this process and follow it, but cannot act on it. They get an email when a request starts.
+                    </p>
+                </div>
             </div>
         </div>
     );

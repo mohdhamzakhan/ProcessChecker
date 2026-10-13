@@ -33,6 +33,7 @@ public class ProcessDefinitionDto
     public string? Description { get; set; }
     public TriggerDefinition Trigger { get; set; } = new();
     public List<StepDefinition> Steps { get; set; } = new();
+    public List<string> Observers { get; set; } = new();   // emails or {{placeholders}}, can only watch
 }
 
 public class TriggerDefinition

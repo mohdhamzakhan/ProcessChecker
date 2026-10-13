@@ -36,7 +36,8 @@ export default function App() {
                 <Item to="/" end icon="dashboard">Dashboard</Item>
                 <Item to="/tasks" icon="tasks">My Tasks</Item>
                 <Item to="/requests" icon="requests">Requests</Item>
-
+                <Item to="/" end icon="dashboard">Overview</Item>
+                <Item to="/dashboards" icon="chart">My dashboards</Item>
                 <div className="nav-label">Setup</div>
                 <Item to="/processes" icon="workflow">Processes</Item>
                 {isAdmin && <Item to="/designer" icon="designer">Designer</Item>}
@@ -63,6 +64,8 @@ export default function App() {
                     <Route path="/connections" element={isAdmin ? <Connections /> : <p>Admins only.</p>} />
                     <Route path="/users" element={isAdmin ? <Users /> : <p>Admins only.</p>} />
                     <Route path="/account" element={<Account />} />
+                    <Route path="/dashboards" element={<Dashboards />} />
+
                 </Routes>
             </main>
         </div>

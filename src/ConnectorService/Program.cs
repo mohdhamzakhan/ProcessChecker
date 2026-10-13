@@ -45,9 +45,22 @@ app.UseSwaggerUI();
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<ConnectorDb>();
-    var creator = db.Database.GetService<IRelationalDatabaseCreator>();
-    try { creator.CreateTables(); }
-    catch (OracleException ex) when (ex.Number == 955) { /* table already exists */ }
+    await db.Database.OpenConnectionAsync();
+    try
+    {
+        var conn = db.Database.GetDbConnection();
+        if (!await DbObjects.TableExistsAsync(conn, "PC_CONNECTIONS"))
+            db.Database.GetService<IRelationalDatabaseCreator>().CreateTables();
+        else
+        {
+            var s = DbObjects.Schema;
+            if (!await DbObjects.ColumnExistsAsync(conn, "PC_CONNECTIONS", "DEFAULT_SCHEMA"))
+                await db.Database.ExecuteSqlRawAsync($"ALTER TABLE {s}.PC_CONNECTIONS ADD (DEFAULT_SCHEMA NVARCHAR2(128))");
+            if (!await DbObjects.ColumnExistsAsync(conn, "PC_CONNECTIONS", "ALLOWED_SCHEMAS"))
+                await db.Database.ExecuteSqlRawAsync($"ALTER TABLE {s}.PC_CONNECTIONS ADD (ALLOWED_SCHEMAS NVARCHAR2(2000))");
+        }
+    }
+    finally { await db.Database.CloseConnectionAsync(); }
 }
 
 static Dictionary<string, object?>? ToParams(Dictionary<string, JsonElement>? p) =>

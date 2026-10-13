@@ -63,6 +63,10 @@ public class DefinitionValidator
             if (string.IsNullOrWhiteSpace(s.Name))
                 errors.Add($"{p}: name is required.");
 
+            foreach (var o in d.Observers)
+                if (!AssigneeRegex.IsMatch(o.Trim()))
+                    errors.Add("Observer '" + o + "' is not an email address or a {{field}} placeholder.");
+
             if (!StepTypes.All.Contains(s.Type))
             {
                 errors.Add($"{p}: unknown type '{s.Type}'.");

@@ -79,4 +79,23 @@ public class TaskMailer
             return ex.Message;
         }
     }
+    public async Task NotifyObserversAsync(ProcessInstance inst, IEnumerable<string> to, string? by, CancellationToken ct)
+    {
+        var list = to.ToList();
+        if (list.Count == 0) return;
+        try
+        {
+            var link = $"{_cfg["Web:BaseUrl"]?.TrimEnd('/')}/instances/{inst.Id}";
+            var body =
+                "<p>You have been added as an observer. You can follow this request but not act on it.</p>" +
+                $"<p><b>{WebUtility.HtmlEncode(inst.Title)}</b>" +
+                (string.IsNullOrWhiteSpace(by) ? "" : $"<br/>Added by: {WebUtility.HtmlEncode(by)}") + "</p>" +
+                $"<p><a href=\"{link}\">Open the request</a></p>";
+            await _mail.SendEmailAsync(list, $"You are observing: {inst.Title}", body, true, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning("Observer email failed for {Id}: {Msg}", inst.Id, ex.Message);
+        }
+    }
 }

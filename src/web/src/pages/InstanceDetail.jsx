@@ -29,7 +29,7 @@ function AssignBar({ detail, step, isAdmin, onDone }) {
             <Icon name="users" size={16} />
             <div className="assignwho">
                 <small>{isApproval ? "Approvers" : "Assigned to"}</small>
-                <b>{current.length ? current.join(", ") : "Anyone"}</b>
+                <b>{current.length ? current.join(", ") : "Nobody (the person who started it, or an admin)"}</b>
             </div>
             {isAdmin && !edit && (
                 <button className="secondary" type="button" onClick={() => { setList(current); setEdit(true); }}>Change</button>
@@ -48,7 +48,46 @@ function AssignBar({ detail, step, isAdmin, onDone }) {
     );
 }
 
-function StepAction({ detail, step, user, isAdmin, onDone }) {
+function ObserversBar({ detail, canEdit, onDone }) {
+    const [edit, setEdit] = useState(false);
+    const [list, setList] = useState([]);
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState(null);
+    const current = detail.observers || [];
+
+    const save = async () => {
+        setBusy(true); setError(null);
+        try {
+            onDone(await api.post(`/api/instances/${detail.summary.id}/observers`, { observers: list }));
+            setEdit(false);
+        } catch (e) { setError(e); } finally { setBusy(false); }
+    };
+
+    return (
+        <div className="assignbar">
+            <Icon name="eye" size={16} />
+            <div className="assignwho">
+                <small>Observers (can follow, cannot act)</small>
+                <b>{current.length ? current.join(", ") : "None"}</b>
+            </div>
+            {canEdit && !edit && (
+                <button className="secondary" type="button" onClick={() => { setList(current); setEdit(true); }}>Change</button>
+            )}
+            {edit && (
+                <div className="assignedit">
+                    <UserPicker value={list} onChange={setList} />
+                    <ErrorBox error={error} />
+                    <div className="actions" style={{ marginTop: 8 }}>
+                        <button disabled={busy} onClick={save}>{busy ? "Saving..." : "Save"}</button>
+                        <button className="secondary" onClick={() => setEdit(false)}>Cancel</button>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+function StepAction({ detail, step, user, isAdmin, isStarter, canWork, onDone }) {
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState(null);
     const [note, setNote] = useState("");
@@ -69,7 +108,9 @@ function StepAction({ detail, step, user, isAdmin, onDone }) {
                 <h3>{step.name} failed</h3>
                 <ErrorBox error={{ message: step.error }} />
                 <ErrorBox error={error} />
-                <button disabled={busy} onClick={() => run(() => api.post(`${base}/retry`))}>Retry this step</button>
+                {canWork
+                    ? <button disabled={busy} onClick={() => run(() => api.post(`${base}/retry`))}>Retry this step</button>
+                    : <p className="muted">Only the people working on this request can retry it.</p>}
             </div>
         );
     }
@@ -78,10 +119,10 @@ function StepAction({ detail, step, user, isAdmin, onDone }) {
     const bar = <AssignBar detail={detail} step={step} isAdmin={isAdmin} onDone={onDone} />;
     const header = <h3>Action needed: {step.name}</h3>;
     const assigned = step.assignees || [];
-    const canAct = assigned.length === 0 || isAdmin || assigned.includes(user.toLowerCase());
-    const notYours = (
-        <p className="muted">This task is assigned to other people. Only they, or an admin, can complete it.</p>
-    );
+    const canAct = assigned.length > 0
+        ? isAdmin || assigned.includes(user.toLowerCase())
+        : isAdmin || isStarter;
+    const notYours = <p className="muted">This task is for someone else. Only they, or an admin, can complete it.</p>;
 
     if (step.type === "Approval") {
         const me = step.approvals?.find((a) => a.approver === user.toLowerCase());
@@ -169,8 +210,16 @@ export default function InstanceDetail() {
     if (!detail) return <><ErrorBox error={error} /><p className="muted">Loading...</p></>;
 
     const s = detail.summary;
+    const me = (user || "").toLowerCase();
+    const isStarter = (s.startedBy || "").toLowerCase() === me;
+    const involved = detail.steps.some((st) =>
+        (st.assignees || []).includes(me) || (st.approvals || []).some((a) => a.approver === me));
+    const observerOnly = !isAdmin && !isStarter && !involved && (detail.observers || []).includes(me);
+    const canManage = isAdmin || isStarter;
+    const canWork = canManage || involved;
+
     const active = detail.steps.find((x) => x.status === "InProgress" || x.status === "Failed");
-    const canCancel = s.status === "Running" || s.status === "Failed";
+    const canCancel = canManage && (s.status === "Running" || s.status === "Failed");
     const built = links.map((l) => ({ ...l, ...buildLink(l.url, detail.data) }));
     const files = detail.steps.flatMap((st) => (st.output?.files || []).map((f) => ({ ...f, step: st.name })));
 
@@ -189,7 +238,18 @@ export default function InstanceDetail() {
             </p>
             <ErrorBox error={error} />
 
+            {observerOnly && (
+                <div className="hintbar">
+                    <Icon name="eye" size={16} />
+                    <span>You are observing this request. You can follow it but you cannot act on it.</span>
+                </div>
+            )}
+
             <Stepper steps={detail.steps} />
+
+            {(canManage || (detail.observers || []).length > 0) && (
+                <ObserversBar detail={detail} canEdit={canManage} onDone={(d) => setDetail(d)} />
+            )}
 
             {built.length > 0 && (
                 <div className="panel">
@@ -217,8 +277,8 @@ export default function InstanceDetail() {
             )}
 
             {active && (
-                <StepAction key={active.id + active.status} detail={detail} step={active}
-                    user={user} isAdmin={isAdmin} onDone={(d) => setDetail(d)} />
+                <StepAction key={active.id + active.status} detail={detail} step={active} user={user}
+                    isAdmin={isAdmin} isStarter={isStarter} canWork={canWork} onDone={(d) => setDetail(d)} />
             )}
             {canCancel && <button className="secondary" onClick={cancel}>Cancel request</button>}
 

@@ -36,9 +36,14 @@ app.Use(async (ctx, next) =>
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<NotifyDb>();
-    var creator = db.Database.GetService<IRelationalDatabaseCreator>();
-    try { creator.CreateTables(); }
+    await db.Database.OpenConnectionAsync();
+    try
+    {
+        if (!await DbObjects.TableExistsAsync(db.Database.GetDbConnection(), "PC_NOTIFICATIONS"))
+            db.Database.GetService<IRelationalDatabaseCreator>().CreateTables();
+    }
     catch (OracleException ex) when (ex.Number == 955) { /* table already exists */ }
+    finally { await db.Database.CloseConnectionAsync(); }
 
     var o = scope.ServiceProvider.GetRequiredService<SmtpOptions>();
 

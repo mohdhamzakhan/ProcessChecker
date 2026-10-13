@@ -120,9 +120,18 @@ var app = builder.Build();
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<GatewayDb>();
-    var creator = db.Database.GetService<IRelationalDatabaseCreator>();
-    try { creator.CreateTables(); }
+    await db.Database.OpenConnectionAsync();
+    try
+    {
+        var conn = db.Database.GetDbConnection();
+        if (!await DbObjects.TableExistsAsync(conn, "PC_USERS"))
+            db.Database.GetService<IRelationalDatabaseCreator>().CreateTables();
+        else if (!await DbObjects.ColumnExistsAsync(conn, "PC_USERS", "AUTH_SOURCE"))
+            await db.Database.ExecuteSqlRawAsync(
+                $"ALTER TABLE {DbObjects.Schema}.PC_USERS ADD (AUTH_SOURCE NVARCHAR2(10) DEFAULT 'Local' NOT NULL)");
+    }
     catch (OracleException ex) when (ex.Number == 955) { /* table already exists */ }
+    finally { await db.Database.CloseConnectionAsync(); }
 
     if (!await db.Users.AnyAsync())
     {

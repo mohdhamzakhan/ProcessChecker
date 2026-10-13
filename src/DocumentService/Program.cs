@@ -32,9 +32,14 @@ app.UseSwaggerUI();
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<DocumentDb>();
-    var creator = db.Database.GetService<IRelationalDatabaseCreator>();
-    try { creator.CreateTables(); }
+    await db.Database.OpenConnectionAsync();
+    try
+    {
+        if (!await DbObjects.TableExistsAsync(db.Database.GetDbConnection(), "PC_DOCUMENTS"))
+            db.Database.GetService<IRelationalDatabaseCreator>().CreateTables();
+    }
     catch (OracleException ex) when (ex.Number == 955) { /* table already exists */ }
+    finally { await db.Database.CloseConnectionAsync(); }
     app.Logger.LogInformation("Storing files in {Root} (max {Mb} MB; types: {Types})",
         scope.ServiceProvider.GetRequiredService<DocStorage>().Root, opt.MaxSizeMb,
         string.Join(" ", opt.AllowedExtensions));

@@ -72,6 +72,7 @@ export const blankState = () => ({
     trigger: { type: "Manual", connection: "", schema: "", query: "", keyColumn: "", everyMinutes: 5 },
     triggerColumns: [],
     steps: [],
+    observers: [],
 });
 
 export function fromDefinition(def) {
@@ -91,6 +92,7 @@ export function fromDefinition(def) {
             url: s.url || "", linkLabel: s.linkLabel || "",
             connection: s.connection || "", schema: s.schema || "", query: s.query || "", columns: [],
             assignees: s.assignees || [],
+            observers: def.observers || [],
             fields: (s.fields || []).map((f) => ({
                 uid: uid(), name: f.name, label: f.label || f.name, type: f.type || "text",
                 required: !!f.required, options: f.options || [], nameAuto: false,
@@ -137,7 +139,7 @@ export function toDefinition(s) {
         }
     });
 
-    return { key: s.key, name: s.name.trim(), description: s.description || undefined, trigger, steps };
+    return { key: s.key, name: s.name.trim(), description: s.description || undefined, trigger, steps, links, observers: s.observers || [] };
 }
 
 /** Values collected before step `index`: usable as {{name}} in later steps. */
@@ -240,6 +242,8 @@ export function allIssues(state) {
         if (!(Number(t.everyMinutes) >= 1)) p("Start trigger: check at least every 1 minute.");
         if (t.schema && !SCHEMA.test(t.schema)) p("Start trigger: the schema name is not valid.");
     }
+    const badObs = (state.observers || []).filter((o) => !(isEmail(o) || isPlaceholder(o)));
+    if (badObs.length) p(`Observers: not an email or {{field}}: ${badObs.join(", ")}.`);
     if (state.steps.length === 0) p("Add at least one step.");
 
     state.steps.forEach((s) =>

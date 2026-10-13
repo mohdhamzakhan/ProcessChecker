@@ -10,6 +10,8 @@ public class EngineDb : DbContext
     public DbSet<StepInstance> Steps => Set<StepInstance>();
     public DbSet<StepApproval> Approvals => Set<StepApproval>();
     public DbSet<TriggerSeen> TriggerSeenRows => Set<TriggerSeen>();
+    public DbSet<Participant> Participants => Set<Participant>();
+    public DbSet<DashboardEntity> Dashboards => Set<DashboardEntity>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -32,6 +34,7 @@ public class EngineDb : DbContext
             e.HasIndex(x => x.ProcessKey);
             e.HasMany(x => x.Steps).WithOne(s => s.Instance)
                 .HasForeignKey(s => s.InstanceId).OnDelete(DeleteBehavior.Cascade);
+            e.Property(x => x.Observers).HasColumnName("OBSERVERS").HasMaxLength(2000);
         });
 
         b.Entity<StepInstance>(e =>
@@ -68,6 +71,28 @@ public class EngineDb : DbContext
             e.Property(x => x.ProcessKey).HasMaxLength(100);
             e.Property(x => x.SourceKey).HasMaxLength(200);
             e.HasIndex(x => new { x.ProcessKey, x.SourceKey }).IsUnique();
+        });
+
+        b.Entity<Participant>(e =>
+        {
+            e.ToTable("PC_PARTICIPANTS");
+            e.Property(x => x.Id).HasColumnName("ID").ValueGeneratedNever();
+            e.Property(x => x.InstanceId).HasColumnName("INSTANCE_ID");
+            e.Property(x => x.Email).HasColumnName("EMAIL").HasMaxLength(200);
+            e.Property(x => x.Role).HasColumnName("ROLE_NAME").HasMaxLength(20);
+            e.HasIndex(x => new { x.Email, x.InstanceId });
+        });
+
+        b.Entity<DashboardEntity>(e =>
+        {
+            e.ToTable("PC_DASHBOARDS");
+            e.Property(x => x.Id).HasColumnName("ID").ValueGeneratedNever();
+            e.Property(x => x.OwnerEmail).HasColumnName("OWNER_EMAIL").HasMaxLength(200);
+            e.Property(x => x.Name).HasColumnName("NAME").HasMaxLength(200);
+            e.Property(x => x.ConfigJson).HasColumnName("CONFIG_JSON").HasColumnType("CLOB");
+            e.Property(x => x.CreatedAt).HasColumnName("CREATED_AT");
+            e.Property(x => x.UpdatedAt).HasColumnName("UPDATED_AT");
+            e.HasIndex(x => x.OwnerEmail);
         });
     }
 }

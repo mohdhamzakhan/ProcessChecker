@@ -26,6 +26,23 @@ function TaskRow({ t, showWho }) {
     );
 }
 
+function ObservedRow({ i }) {
+    return (
+        <Link to={`/instances/${i.id}`} className="task" style={{ "--c": "#64748b" }}>
+            <span className="tbadge"><Icon name="eye" size={20} /></span>
+            <div className="tmain">
+                <b>{i.title}</b>
+                <small>{i.processName} · now at {i.currentStep || "–"}</small>
+            </div>
+            <div className="tmeta">
+                <span className="tverb">{i.completedSteps} of {i.totalSteps} steps</span>
+                <small>Started {ago(i.createdAt)}</small>
+            </div>
+            <span className="tgo">View →</span>
+        </Link>
+    );
+}
+
 export default function Tasks() {
     const { isAdmin } = useUser();
     const [data, setData] = useState(null);
@@ -41,15 +58,22 @@ export default function Tasks() {
 
     const tabs = [
         ["mine", "Assigned to me", data?.mine?.length],
-        ["open", "Open to anyone", data?.open?.length],
+        ["observing", "I am observing", data?.observing?.length],
+        ["open", "Nobody assigned", data?.open?.length],
         ...(isAdmin ? [["others", "Assigned to others", data?.others?.length]] : []),
     ];
     const list = data?.[tab] || [];
+    const text = {
+        mine: ["You are all caught up", "No tasks are waiting for you."],
+        observing: ["Nothing to observe", "You are not observing any running request."],
+        open: ["Nothing here", "Tasks that nobody is assigned to, in requests you started, appear here."],
+        others: ["Nothing here", "No tasks are assigned to other people."],
+    }[tab];
 
     return (
         <>
             <div className="page-head">
-                <div><h2>My Tasks</h2><p>Things that are waiting for a person to act.</p></div>
+                <div><h2>My Tasks</h2><p>Things that are waiting for a person to act, and requests you follow.</p></div>
             </div>
 
             <ErrorBox error={error} />
@@ -62,15 +86,10 @@ export default function Tasks() {
                 ))}
             </div>
 
-            {data && list.length === 0 && (
-                <div className="empty">
-                    <b>{tab === "mine" ? "You are all caught up" : "Nothing here"}</b>
-                    {tab === "mine" && "No tasks are waiting for you."}
-                    {tab === "open" && "Every waiting task has someone assigned."}
-                    {tab === "others" && "No tasks are assigned to other people."}
-                </div>
-            )}
-            {list.map((t) => <TaskRow key={t.instanceId + t.stepKey} t={t} showWho={tab === "others"} />)}
+            {data && list.length === 0 && <div className="empty"><b>{text[0]}</b>{text[1]}</div>}
+            {tab === "observing"
+                ? list.map((i) => <ObservedRow key={i.id} i={i} />)
+                : list.map((t) => <TaskRow key={t.instanceId + t.stepKey} t={t} showWho={tab === "others"} />)}
         </>
     );
 }

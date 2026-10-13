@@ -1,7 +1,9 @@
-using System.Text.Json;
 using DefinitionService;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Storage;
 using ProcessChecker.Contracts;
+using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -19,7 +21,16 @@ app.UseSwagger();
 app.UseSwaggerUI();
 
 using (var scope = app.Services.CreateScope())
-    scope.ServiceProvider.GetRequiredService<DefinitionDb>().Database.EnsureCreated();
+{
+    var db = scope.ServiceProvider.GetRequiredService<DefinitionDb>();
+    await db.Database.OpenConnectionAsync();
+    try
+    {
+        if (!await DbObjects.TableExistsAsync(db.Database.GetDbConnection(), "PC_DEFINITIONS"))
+            db.Database.GetService<IRelationalDatabaseCreator>().CreateTables();
+    }
+    finally { await db.Database.CloseConnectionAsync(); }
+}
 
 var json = new JsonSerializerOptions(JsonSerializerDefaults.Web);
 
