@@ -1442,3 +1442,247 @@ a.btn {
     gap: 8px;
     font-weight: 500;
 }
+/* centered content on wide screens (the designer stays full width) */
+.content {
+    max-width: 1400px;
+    margin: 0 auto;
+}
+
+    .content.wide {
+        max-width: none;
+        margin: 0;
+    }
+
+/* ---- requests list ---- */
+.filterbar select {
+    min-width: 190px;
+}
+
+.fchip .n {
+    margin-left: 7px;
+    opacity: .65;
+    font-size: 12px;
+}
+
+.rlist {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.rhead, .rrow {
+    display: grid;
+    gap: 16px;
+    align-items: center;
+    grid-template-columns: minmax(230px, 2.4fr) 120px minmax(150px, 1.3fr) minmax(130px, 1fr) 100px 215px;
+}
+
+.rhead {
+    padding: 0 18px 0 22px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--muted);
+}
+
+.rrow {
+    --c: #cbd5e1;
+    padding: 14px 18px;
+    background: #fff;
+    border: 1px solid var(--line);
+    border-left: 4px solid var(--c);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    transition: .12s;
+}
+
+    .rrow:hover {
+        border-color: #c7d2fe;
+        border-left-color: var(--c);
+        box-shadow: 0 6px 18px rgba(15,23,42,.08);
+    }
+
+    .rrow.Running {
+        --c: #f59e0b;
+    }
+
+    .rrow.Completed {
+        --c: #16a34a;
+    }
+
+    .rrow.Rejected, .rrow.Failed {
+        --c: #dc2626;
+    }
+
+    .rrow.Cancelled {
+        --c: #94a3b8;
+    }
+
+.rmain {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+}
+
+.rav {
+    width: 38px;
+    height: 38px;
+    border-radius: 50%;
+    flex: none;
+    display: grid;
+    place-items: center;
+    background: var(--primary-soft);
+    color: var(--primary-dark);
+    font-size: 12px;
+    font-weight: 700;
+}
+
+    .rav.auto {
+        background: #ecfeff;
+        color: #0e7490;
+    }
+
+.rtext {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+    .rtext a {
+        font-weight: 650;
+        color: var(--text);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+        .rtext a:hover {
+            color: var(--primary);
+            text-decoration: none;
+        }
+
+    .rtext small {
+        color: var(--muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+.segs {
+    display: flex;
+    gap: 3px;
+    margin-bottom: 5px;
+}
+
+    .segs i {
+        flex: 1;
+        max-width: 46px;
+        height: 8px;
+        border-radius: 99px;
+        background: #e8ecf4;
+    }
+
+        .segs i.done {
+            background: #22c55e;
+        }
+
+        .segs i.now {
+            background: #f59e0b;
+        }
+
+        .segs i.bad {
+            background: #ef4444;
+        }
+
+.rstep {
+    font-weight: 500;
+}
+
+.ractions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+    .ractions button {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+    }
+
+    .ractions a:hover {
+        text-decoration: none;
+    }
+
+.has-links {
+    position: relative;
+}
+
+    .has-links::after {
+        content: "";
+        position: absolute;
+        top: -3px;
+        right: -3px;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: #0d9488;
+        border: 2px solid #fff;
+    }
+
+@media (max-width: 1100px) {
+    .rhead {
+        display: none;
+    }
+
+    .rrow {
+        grid-template-columns: 1fr 1fr;
+        row-gap: 12px;
+    }
+
+    .rmain {
+        grid-column: 1 / -1;
+    }
+
+    .ractions {
+        grid-column: 1 / -1;
+        justify-content: flex-start;
+    }
+}
+
+/* ---- documents pop-up ---- */
+.modal.docsmodal {
+    width: min(620px, 100%);
+    max-height: 88vh;
+    overflow: auto;
+    background: #fff;
+    border-radius: 14px;
+    padding: 22px;
+    box-shadow: 0 30px 80px rgba(0,0,0,.4);
+}
+
+.modalhead {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+
+    .modalhead h3 {
+        margin: 0;
+    }
+
+.docsec {
+    margin-top: 16px;
+}
+
+    .docsec h4 {
+        margin: 0 0 4px;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: .06em;
+        color: var(--muted);
+    }
