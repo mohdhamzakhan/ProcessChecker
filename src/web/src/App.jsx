@@ -11,6 +11,7 @@ import Account from "./pages/Account";
 import Login from "./pages/Login";
 import Designer from "./designer/Designer";
 import Icon from "./designer/Icon";
+import Dashboards from "./pages/Dashboards"
 
 const Item = ({ to, icon, end, children }) => (
     <NavLink to={to} end={end} className="nav"><Icon name={icon} size={18} />{children}</NavLink>
