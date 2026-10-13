@@ -17,7 +17,7 @@ public class AdOptions
     public string? ServicePassword { get; set; }
 }
 
-public record AdUser(string Email, string DisplayName, bool IsAdmin);
+public record AdUser(string Email, string DisplayName, bool IsAdmin, string Username);
 public record DirectoryPerson(string Email, string Name, string Username);
 
 public class AdUnavailableException : Exception
@@ -81,7 +81,7 @@ public class AdService
 
             var name = user.DisplayName ?? user.Name ?? email;
             var isAdmin = groups != null && _o.AdminGroups.Any(g => groups.Contains(g));
-            return new AdUser(email, name, isAdmin);
+            return new AdUser(email, name, isAdmin, user.SamAccountName ?? sam);
         }
         catch (PrincipalException ex)
         {

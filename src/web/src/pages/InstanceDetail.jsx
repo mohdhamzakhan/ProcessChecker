@@ -1,5 +1,5 @@
 ﻿import { useCallback, useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { Link,useParams } from "react-router-dom";
 import { api, uploadDocument } from "../api";
 import { useUser } from "../user";
 import { buildLink } from "../links";
@@ -189,10 +189,10 @@ function StepAction({ detail, step, user, isAdmin, isStarter, canWork, onDone })
 
 export default function InstanceDetail() {
     const { id } = useParams();
-    const { user, isAdmin } = useUser();
+    const { me, user, isAdmin } = useUser();
     const [detail, setDetail] = useState(null);
     const [error, setError] = useState(null);
-    const [links, setLinks] = useState([]);
+    const [procDef, setProcDef] = useState(null);
 
     const load = useCallback(() =>
         api.get(`/api/instances/${id}`).then((d) => { setDetail(d); setError(null); }).catch(setError), [id]);
@@ -203,20 +203,24 @@ export default function InstanceDetail() {
     useEffect(() => {
         if (!processKey) return;
         api.get(`/api/definitions/${encodeURIComponent(processKey)}`)
-            .then((r) => setLinks(r.definition.links || []))
-            .catch(() => setLinks([]));
+            .then((r) => setProcDef(r.definition))
+            .catch(() => setProcDef(null));
     }, [processKey]);
 
     if (!detail) return <><ErrorBox error={error} /><p className="muted">Loading...</p></>;
 
     const s = detail.summary;
-    const me = (user || "").toLowerCase();
-    const isStarter = (s.startedBy || "").toLowerCase() === me;
+    const links = procDef?.links || [];
+    const ids = [me?.email, me?.username].filter(Boolean).map((x) => x.toLowerCase());
+    const isStarter = (s.startedBy || "").toLowerCase() === (user || "").toLowerCase();
     const involved = detail.steps.some((st) =>
-        (st.assignees || []).includes(me) || (st.approvals || []).some((a) => a.approver === me));
-    const observerOnly = !isAdmin && !isStarter && !involved && (detail.observers || []).includes(me);
+        (st.assignees || []).some((a) => ids.includes(a)) || (st.approvals || []).some((a) => ids.includes(a.approver)));
+    const isRequester = (detail.requesters || []).some((r) => ids.includes(r));
+    const isObserver = (detail.observers || []).some((o) => ids.includes(o));
+    const watchOnly = !isAdmin && !isStarter && !involved && (isRequester || isObserver);
     const canManage = isAdmin || isStarter;
     const canWork = canManage || involved;
+    const needsRequester = isAdmin && (procDef?.requesters || []).length > 0 && (detail.requesters || []).length === 0;
 
     const active = detail.steps.find((x) => x.status === "InProgress" || x.status === "Failed");
     const canCancel = canManage && (s.status === "Running" || s.status === "Failed");
@@ -234,14 +238,25 @@ export default function InstanceDetail() {
             <p className="muted">
                 {s.processName} v{s.processVersion} · started {fmt(s.createdAt)}
                 {s.startedBy && ` by ${s.startedBy}`}
+                {(detail.requesters || []).length > 0 && ` · requested by ${detail.requesters.join(", ")}`}
                 {s.completedAt && ` · finished ${fmt(s.completedAt)}`}
             </p>
             <ErrorBox error={error} />
 
-            {observerOnly && (
+            {watchOnly && (
                 <div className="hintbar">
                     <Icon name="eye" size={16} />
-                    <span>You are observing this request. You can follow it but you cannot act on it.</span>
+                    <span>
+                        {isRequester
+                            ? "This is your request. An administrator is handling it, and any booking documents will appear below."
+                            : "You are observing this request. You can follow it but you cannot act on it."}
+                    </span>
+                </div>
+            )}
+            {needsRequester && (
+                <div className="warnbar" style={{ marginBottom: 14 }}>
+                    The requester could not be worked out for this request, so the requester cannot see it.
+                    Check the value in “Collected data” below, and the requester setting of the process.
                 </div>
             )}
 
@@ -251,30 +266,32 @@ export default function InstanceDetail() {
                 <ObserversBar detail={detail} canEdit={canManage} onDone={(d) => setDetail(d)} />
             )}
 
-            {built.length > 0 && (
-                <div className="panel">
-                    <h3>Documents</h3>
-                    {built.map((l, i) =>
-                        l.valid ? (
-                            <SafeLink key={i} url={l.url} label={l.label} />
-                        ) : (
-                            <div key={i} className="linkrow">
-                                <Icon name="link" size={16} />
-                                <span className="muted">
-                                    {l.label}: {l.missing.length ? `waiting for ${l.missing.join(", ")}` : "the address is not valid"}
-                                </span>
-                            </div>
-                        )
-                    )}
-                </div>
-            )}
-
-            {files.length > 0 && (
-                <div className="panel">
-                    <h3>Files</h3>
-                    <FileLinks files={files} />
-                </div>
-            )}
+            <div className="panel">
+                <h3>Documents</h3>
+                {built.map((l, i) =>
+                    l.valid ? (
+                        <SafeLink key={i} url={l.url} label={l.label} instanceId={s.id} index={i} />
+                    ) : (
+                        <div key={i} className="linkrow">
+                            <Icon name="link" size={16} />
+                            <span className="muted">
+                                {l.label}: {l.missing.length ? `waiting for ${l.missing.join(", ")}` : "the address is not valid"}
+                            </span>
+                        </div>
+                    )
+                )}
+                <FileLinks files={files} />
+                {built.length === 0 && files.length === 0 && (
+                    <p className="muted">No documents yet. Booking files appear here once they have been uploaded.</p>
+                )}
+                {links.length === 0 && isAdmin && (
+                    <div className="hintbar" style={{ marginTop: 10 }}>
+                        <Icon name="link" size={16} />
+                        <span>No document links are set up for this process.</span>
+                        <Link to={`/designer/${s.processKey}`}>Add one in the designer</Link>
+                    </div>
+                )}
+            </div>
 
             {active && (
                 <StepAction key={active.id + active.status} detail={detail} step={active} user={user}

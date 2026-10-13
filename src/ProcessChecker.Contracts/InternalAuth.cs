@@ -21,6 +21,15 @@ public static class InternalAuth
     public static string? CallerRole(this HttpContext c) =>
         c.Request.Headers[RoleHeader].FirstOrDefault()?.Trim() is { Length: > 0 } s ? s : null;
 
+    public const string NameHeader = "X-User-Name";
+    public static string? CallerName(this HttpContext c)
+    {
+        var v = c.Request.Headers[NameHeader].FirstOrDefault()?.Trim().ToLowerInvariant();
+        if (string.IsNullOrEmpty(v)) return null;
+        var i = v.IndexOf('\\');
+        return i >= 0 ? v[(i + 1)..] : v;
+    }
+
     public static bool IsAdmin(this HttpContext c) => c.CallerRole() == "Admin";
 
     /// Rejects /api calls that do not carry the shared key. Does nothing when Gateway:Key is not set.

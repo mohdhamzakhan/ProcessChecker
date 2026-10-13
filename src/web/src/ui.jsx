@@ -168,18 +168,19 @@ export function FileLinks({ files }) {
 }
 
 /** A link to a document on another server, with an in-page viewer */
-export function SafeLink({ url, label }) {
+export function SafeLink({ url, label, instanceId, index }) {
     const [view, setView] = useState(false);
     const ok = /^https?:\/\//i.test(url || "");
+    const canView = ok && instanceId && Number.isInteger(index);
     return (
         <div className="linkrow">
             <Icon name="link" size={16} />
             {ok
                 ? <a href={url} target="_blank" rel="noopener noreferrer" title={url}>{label || url}</a>
                 : <span>{label || url}</span>}
-            {ok && <button className="secondary" type="button" onClick={() => setView(true)}>View</button>}
+            {canView && <button className="secondary" type="button" onClick={() => setView(true)}>View</button>}
             <button className="secondary" type="button" onClick={() => navigator.clipboard?.writeText(url)}>Copy</button>
-            {view && <Viewer source={{ kind: "url", url, label }} onClose={() => setView(false)} />}
+            {view && <Viewer source={{ kind: "link", instanceId, index, url, label }} onClose={() => setView(false)} />}
         </div>
     );
 }

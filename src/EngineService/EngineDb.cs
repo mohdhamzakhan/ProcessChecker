@@ -35,6 +35,7 @@ public class EngineDb : DbContext
             e.HasMany(x => x.Steps).WithOne(s => s.Instance)
                 .HasForeignKey(s => s.InstanceId).OnDelete(DeleteBehavior.Cascade);
             e.Property(x => x.Observers).HasColumnName("OBSERVERS").HasMaxLength(2000);
+            e.Property(x => x.Requester).HasColumnName("REQUESTER").HasMaxLength(2000);
         });
 
         b.Entity<StepInstance>(e =>

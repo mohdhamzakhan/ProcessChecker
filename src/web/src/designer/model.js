@@ -73,6 +73,7 @@ export const blankState = () => ({
     triggerColumns: [],
     steps: [],
     observers: [],
+    requesters: [],
 });
 
 export function fromDefinition(def) {
@@ -93,6 +94,7 @@ export function fromDefinition(def) {
             connection: s.connection || "", schema: s.schema || "", query: s.query || "", columns: [],
             assignees: s.assignees || [],
             observers: def.observers || [],
+            requesters: def.requesters || [],
             fields: (s.fields || []).map((f) => ({
                 uid: uid(), name: f.name, label: f.label || f.name, type: f.type || "text",
                 required: !!f.required, options: f.options || [], nameAuto: false,
@@ -139,7 +141,10 @@ export function toDefinition(s) {
         }
     });
 
-    return { key: s.key, name: s.name.trim(), description: s.description || undefined, trigger, steps, links, observers: s.observers || [] };
+    return {
+        key: s.key, name: s.name.trim(), description: s.description || undefined, trigger, steps, links,
+        observers: s.observers || [], requesters: s.requesters || [],
+    };
 }
 
 /** Values collected before step `index`: usable as {{name}} in later steps. */
@@ -244,6 +249,8 @@ export function allIssues(state) {
     }
     const badObs = (state.observers || []).filter((o) => !(isEmail(o) || isPlaceholder(o)));
     if (badObs.length) p(`Observers: not an email or {{field}}: ${badObs.join(", ")}.`);
+    const badReq = (state.requesters || []).filter((r) => !(isEmail(r) || isPlaceholder(r)));
+    if (badReq.length) p(`Requester: not an email or {{field}}: ${badReq.join(", ")}.`);
     if (state.steps.length === 0) p("Add at least one step.");
 
     state.steps.forEach((s) =>

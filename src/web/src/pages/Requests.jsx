@@ -49,7 +49,7 @@ function DocsModal({ item, links, onClose }) {
                                 <h4>Links</h4>
                                 {built.map((l, i) =>
                                     l.valid ? (
-                                        <SafeLink key={i} url={l.url} label={l.label} />
+                                        <SafeLink key={i} url={l.url} label={l.label} instanceId={item.id} index={i} />
                                     ) : (
                                         <div key={i} className="linkrow">
                                             <Icon name="link" size={16} />
@@ -144,6 +144,7 @@ export default function Requests() {
                     <option value="started">I started</option>
                     <option value="assigned">Assigned to me</option>
                     <option value="observer">I observe</option>
+                    <option value="requested">I requested</option>
                 </select>
             </div>
 

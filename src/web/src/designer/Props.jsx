@@ -332,7 +332,28 @@ function LinkHint({ url, fields }) {
 }
 
 // ---------------------------------------------------------------- panels
-export function ProcessProps({ state, change, connections }) {
+
+function ApplyRequesters({ processKey, disabled }) {
+    const [msg, setMsg] = useState("");
+    const [busy, setBusy] = useState(false);
+    const run = async () => {
+        setBusy(true); setMsg("");
+        try {
+            const r = await api.post(`/api/instances/resolve-requesters?processKey=${encodeURIComponent(processKey)}`);
+            setMsg(`Updated ${r.updated} existing request(s).`);
+        } catch (e) { setMsg(e.message); } finally { setBusy(false); }
+    };
+    return (
+        <div>
+            <button type="button" className="secondary" disabled={disabled || busy} onClick={run}>
+                {busy ? "Working..." : "Apply to existing requests"}
+            </button>
+            {msg && <span className="small"> {msg}</span>}
+            {disabled && <p className="muted small">Save the process first.</p>}
+        </div>
+    );
+}
+export function ProcessProps({ state, change, connections, dirty }) {
     const t = state.trigger;
     const setT = (patch) => change((s) => ({ ...s, trigger: { ...s.trigger, ...patch } }));
     const conn = connections.find((c) => c.name === t.connection);
@@ -407,6 +428,22 @@ export function ProcessProps({ state, change, connections }) {
                     <p className="muted small">
                         Observers can open every request of this process and follow it, but cannot act on it. They get an email when a request starts.
                     </p>
+                </div>
+
+                <div className="sect">
+                    <h5>Who is the requester?</h5>
+                    <p className="muted small">
+                        The person the request is for. They can open it and its documents, but cannot act on it.
+                        Pick a field that holds a username or email, such as the creator.
+                    </p>
+                    <UserPicker value={state.requesters || []} fields={availableFields(state, state.steps.length)}
+                        onChange={(requesters) => change((s) => ({ ...s, requesters }))} />
+                    <p className="muted small">
+                        If your data only has an ID, add a <b>Fetch data</b> step first that looks up the username from your user table,
+                        then pick that username here. You can also type <code>{"{{USERNAME}}"}</code> and press Enter.
+                    </p>
+                    {!state.isNew && (state.requesters || []).length > 0 &&
+                        <ApplyRequesters processKey={state.key} disabled={dirty} />}
                 </div>
             </div>
         </div>

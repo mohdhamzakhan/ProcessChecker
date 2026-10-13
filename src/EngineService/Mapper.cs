@@ -41,7 +41,7 @@ public static class Mapper
         }).ToList();
 
         var data = DataBag.FromJson(i.DataJson).All.ToDictionary(k => k.Key, k => k.Value);
-        return new InstanceDetail(ToSummary(i), data, steps, TaskMailer.Split(i.Observers));
+        return new InstanceDetail(ToSummary(i), data, steps, TaskMailer.Split(i.Observers), TaskMailer.Split(i.Requester));
     }
 
     private static JsonElement? ParseElement(string? json) =>

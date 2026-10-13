@@ -9,9 +9,10 @@ public static class PartRole
     public const string Observer = "Observer";
     public const string Assignee = "Assignee";
     public const string Approver = "Approver";
+    public const string Requester = "Requester";
 }
 
-/// One row per person per request. This is what decides who may see a request.
+/// One row per person per request. "Email" holds the person's identity: an email or a username.
 public class Participant
 {
     public Guid Id { get; set; } = Guid.NewGuid();
@@ -28,6 +29,7 @@ public static class ParticipantRules
             yield return (i.StartedBy.Trim().ToLowerInvariant(), PartRole.Starter);
 
         foreach (var o in TaskMailer.Split(i.Observers)) yield return (o, PartRole.Observer);
+        foreach (var r in TaskMailer.Split(i.Requester)) yield return (r, PartRole.Requester);
 
         foreach (var s in i.Steps)
         {
@@ -37,23 +39,59 @@ public static class ParticipantRules
     }
 }
 
+public static class Requesters
+{
+    /// "CORP\JSmith " -> "jsmith". Anything with spaces (a display name) is not an identity.
+    public static string? Normalize(string? raw)
+    {
+        var v = (raw ?? "").Trim().ToLowerInvariant();
+        var i = v.IndexOf('\\');
+        if (i >= 0) v = v[(i + 1)..];
+        return v.Length == 0 || v.Length > 200 || v.Any(char.IsWhiteSpace) ? null : v;
+    }
+
+    /// Works out the requester(s) from the process settings and the request data. null = not known yet.
+    public static string? Resolve(ProcessDefinitionDto def, DataBag data)
+    {
+        var list = new List<string>();
+        foreach (var t in def.Requesters)
+            foreach (var part in data.Render(t).Split(new[] { ';', ',' },
+                         StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                var id = Normalize(part);
+                if (id != null && !list.Contains(id) && list.Count < 10) list.Add(id);
+            }
+        return TaskMailer.Join(list);
+    }
+}
+
 public static class Access
 {
+    /// The caller's identities: the email, and the AD username when known.
+    public static List<string> Identities(this HttpContext c)
+    {
+        var list = new List<string>();
+        if (c.Caller() is { } e) list.Add(e);
+        if (c.CallerName() is { } n && !list.Contains(n)) list.Add(n);
+        return list;
+    }
+
     /// The requests the caller may see: admins see all, everyone else only the ones they take part in.
     public static IQueryable<ProcessInstance> Visible(this EngineDb db, HttpContext http)
     {
         if (http.IsAdmin()) return db.Instances;
-        var email = http.Caller() ?? "";
-        return db.Instances.Where(i => db.Participants.Any(p => p.InstanceId == i.Id && p.Email == email));
+        var ids = http.Identities();
+        return db.Instances.Where(i => db.Participants.Any(p => p.InstanceId == i.Id && ids.Contains(p.Email)));
     }
 
-    /// May the caller act on the request (approve, submit, upload, retry)? Observers may not.
+    /// May the caller act on the request? Observers and requesters may only look.
     public static async Task<bool> CanWorkAsync(this EngineDb db, HttpContext http, Guid id, CancellationToken ct)
     {
         if (http.IsAdmin()) return true;
-        var email = http.Caller();
-        if (email is null) return false;
+        var ids = http.Identities();
+        if (ids.Count == 0) return false;
         return await db.Participants.AnyAsync(
-            p => p.InstanceId == id && p.Email == email && p.Role != PartRole.Observer, ct);
+            p => p.InstanceId == id && ids.Contains(p.Email)
+                 && p.Role != PartRole.Observer && p.Role != PartRole.Requester, ct);
     }
 }

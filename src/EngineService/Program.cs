@@ -19,6 +19,18 @@ builder.Services.AddHttpClient<ConnectorClient>(c =>
 { c.BaseAddress = new Uri(cfg["Services:Connector"]!); c.Timeout = TimeSpan.FromSeconds(90); AddKey(c); });
 builder.Services.AddHttpClient<NotificationClient>(c =>
 { c.BaseAddress = new Uri(cfg["Services:Notification"]!); c.Timeout = TimeSpan.FromSeconds(30); AddKey(c); });
+builder.Services.AddHttpClient("docs", c => c.Timeout = TimeSpan.FromSeconds(60))
+    .ConfigurePrimaryHttpMessageHandler(() =>
+    {
+        var h = new HttpClientHandler
+        {
+            AllowAutoRedirect = false,
+            UseDefaultCredentials = cfg.GetValue("Documents:UseWindowsLogin", false)
+        };
+        if (cfg.GetValue("Documents:IgnoreCertificateErrors", false))
+            h.ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
+        return h;
+    });
 
 // One handler per step type. A new step type = a new class + one line here.
 builder.Services.AddScoped<IStepHandler, ApprovalHandler>();
@@ -125,10 +137,14 @@ app.MapGet("/api/instances", async (
         "started" => new[] { PartRole.Starter },
         "assigned" => new[] { PartRole.Assignee, PartRole.Approver },
         "observer" => new[] { PartRole.Observer },
+        "requested" => new[] { PartRole.Requester },
         _ => null
     };
-    if (roles != null && me != null)
-        query = query.Where(i => db.Participants.Any(p => p.InstanceId == i.Id && p.Email == me && roles.Contains(p.Role)));
+    if (roles != null)
+    {
+        var ids = http.Identities();
+        query = query.Where(i => db.Participants.Any(p => p.InstanceId == i.Id && ids.Contains(p.Email) && roles.Contains(p.Role)));
+    }
 
     var size = Math.Clamp(pageSize ?? 25, 1, 100);
     var pageNo = Math.Max(page ?? 1, 1);
@@ -270,17 +286,27 @@ app.MapGet("/api/tasks", async (HttpContext http, EngineDb db, string? user, Can
           .Select(t => t with { Assignees = string.Join(", ", TaskMailer.Split(t.Assignees)) }).ToList()
         : new List<TaskItem>();
 
-    var observing = email == null
+    var ids = http.Identities();
+
+    var observing = ids.Count == 0
         ? new List<InstanceSummary>()
         : (await db.Instances.AsNoTracking().Include(i => i.Steps)
             .Where(i => i.Status == InstanceStatus.Running
-                        && db.Participants.Any(p => p.InstanceId == i.Id && p.Email == email && p.Role == PartRole.Observer))
+                        && db.Participants.Any(p => p.InstanceId == i.Id && ids.Contains(p.Email) && p.Role == PartRole.Observer))
+            .OrderByDescending(i => i.CreatedAt).Take(50).ToListAsync(ct))
+          .Select(Mapper.ToSummary).ToList();
+
+    var requested = ids.Count == 0
+        ? new List<InstanceSummary>()
+        : (await db.Instances.AsNoTracking().Include(i => i.Steps)
+            .Where(i => db.Participants.Any(p => p.InstanceId == i.Id && ids.Contains(p.Email) && p.Role == PartRole.Requester))
             .OrderByDescending(i => i.CreatedAt).Take(50).ToListAsync(ct))
           .Select(Mapper.ToSummary).ToList();
 
     return Results.Ok(new
     {
         mine = approvals.Concat(assigned).OrderBy(t => t.Since).ToList(),
+        requested,
         observing,
         open = open.OrderBy(t => t.Since).ToList(),
         others = others.OrderBy(t => t.Since).ToList()
@@ -330,6 +356,93 @@ app.MapGet("/api/dashboard", async (HttpContext http, EngineDb db, CancellationT
     });
 });
 
+app.MapPost("/api/instances/resolve-requesters", async (
+    HttpContext http, string processKey, DefinitionClient defs, WorkflowEngine engine, CancellationToken ct) =>
+{
+    if (!http.IsAdmin())
+        return Results.Json(new { error = "Only an admin can do this." }, statusCode: 403);
+    var info = await defs.GetLatestAsync(processKey, ct);
+    if (info is null) return Results.NotFound();
+    return Results.Ok(new { updated = await engine.ResolveRequestersAsync(info.Definition, processKey, ct) });
+});
+
+const long MaxDocBytes = 50L * 1024 * 1024;
+var viewable = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    { "application/pdf", "image/png", "image/jpeg", "image/gif", "text/plain" };
+
+// The server fetches the document, so the page does not depend on the other server's frame or sign-in rules.
+app.MapGet("/api/instances/{id:guid}/links/{index:int}/file", async (
+    HttpContext http, Guid id, int index, EngineDb db, DefinitionClient defs,
+    IHttpClientFactory factory, IConfiguration config, CancellationToken ct) =>
+{
+    var inst = await db.Visible(http).AsNoTracking().FirstOrDefaultAsync(i => i.Id == id, ct);
+    if (inst is null) return Results.NotFound();
+
+    var info = await defs.GetLatestAsync(inst.ProcessKey, ct);
+    var links = info?.Definition.Links ?? new List<LinkDefinition>();
+    if (index < 0 || index >= links.Count) return Results.NotFound();
+
+    var allowed = config.GetSection("Documents:AllowedHosts").Get<string[]>() ?? Array.Empty<string>();
+    if (allowed.Length == 0)
+        return Results.Json(new { error = "Viewing documents inside this page is switched off. An admin must list the document server under Documents:AllowedHosts." }, statusCode: 400);
+
+    var template = links[index].Url;
+    if (!LinkTemplate.HostIsFixed(template))
+        return Results.Json(new { error = "The link address must start with http:// or https:// and a fixed server name." }, statusCode: 400);
+
+    var (url, missing) = LinkTemplate.Build(template, DataBag.FromJson(inst.DataJson));
+    if (missing.Count > 0)
+        return Results.Json(new { error = "The link is waiting for: " + string.Join(", ", missing) }, statusCode: 400);
+    if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        return Results.Json(new { error = "The link address is not valid." }, statusCode: 400);
+
+    var hostPort = $"{uri.Host}:{uri.Port}";
+    if (!allowed.Any(a => a.Equals(uri.Host, StringComparison.OrdinalIgnoreCase)
+                          || a.Equals(hostPort, StringComparison.OrdinalIgnoreCase)))
+        return Results.Json(new { error = $"The server {uri.Host} is not in Documents:AllowedHosts." }, statusCode: 400);
+
+    HttpResponseMessage res;
+    try
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Get, uri);
+        res = await factory.CreateClient("docs").SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+    }
+    catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+    {
+        return Results.Json(new { error = "Could not reach the document server: " + ex.Message }, statusCode: 502);
+    }
+
+    using (res)
+    {
+        var code = (int)res.StatusCode;
+        if (code is >= 300 and < 400)
+            return Results.Json(new { error = "The document server redirected the request, usually to a sign-in page." }, statusCode: 502);
+        if (code is 401 or 403)
+            return Results.Json(new { error = $"The document server refused access (HTTP {code}). Try Documents:UseWindowsLogin." }, statusCode: 502);
+        if (!res.IsSuccessStatusCode)
+            return Results.Json(new { error = $"The document server answered HTTP {code}." }, statusCode: 502);
+        if (res.Content.Headers.ContentLength > MaxDocBytes)
+            return Results.Json(new { error = "The document is larger than 50 MB." }, statusCode: 413);
+
+        await using var s = await res.Content.ReadAsStreamAsync(ct);
+        using var ms = new MemoryStream();
+        var buf = new byte[81920];
+        int n;
+        while ((n = await s.ReadAsync(buf, ct)) > 0)
+        {
+            ms.Write(buf, 0, n);
+            if (ms.Length > MaxDocBytes)
+                return Results.Json(new { error = "The document is larger than 50 MB." }, statusCode: 413);
+        }
+
+        // only types that cannot run code are shown; anything else is offered as a download
+        var type = res.Content.Headers.ContentType?.MediaType ?? "application/octet-stream";
+        if (!viewable.Contains(type)) type = "application/octet-stream";
+        http.Response.Headers["X-Content-Type-Options"] = "nosniff";
+        return Results.File(ms.ToArray(), type);
+    }
+});
+
 // ------------------------------------------------------------ poll now (for testing)
 app.MapPost("/api/poll/{key}/run-now", async (
     string key, DefinitionClient defs, PollingService poller, CancellationToken ct) =>
@@ -338,6 +451,8 @@ app.MapPost("/api/poll/{key}/run-now", async (
                ?? throw new EngineException(404, $"Process '{key}' was not found.");
     return Results.Ok(await poller.PollAsync(info, ct));
 });
+
+
 
 app.Run();
 
@@ -365,4 +480,6 @@ static async Task EnsureObjectsAsync(EngineDb db, System.Data.Common.DbConnectio
                  "UPDATED_AT TIMESTAMP(7) NOT NULL, CONSTRAINT PC_DASHBOARDS_PK PRIMARY KEY (ID))");
     if (!await DbObjects.IndexExistsAsync(conn, "PC_DASH_OWNER_IX"))
         await Do($"CREATE INDEX {s}.PC_DASH_OWNER_IX ON {s}.PC_DASHBOARDS (OWNER_EMAIL)");
+    if (!await DbObjects.ColumnExistsAsync(conn, "PC_INSTANCES", "REQUESTER"))
+        await Do($"ALTER TABLE {s}.PC_INSTANCES ADD (REQUESTER NVARCHAR2(2000))");
 }

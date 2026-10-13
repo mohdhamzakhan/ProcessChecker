@@ -34,6 +34,14 @@ public class ProcessDefinitionDto
     public TriggerDefinition Trigger { get; set; } = new();
     public List<StepDefinition> Steps { get; set; } = new();
     public List<string> Observers { get; set; } = new();   // emails or {{placeholders}}, can only watch
+    public List<string> Requesters { get; set; } = new();   // usernames/emails or {{placeholders}}: who the request is for
+    public List<LinkDefinition> Links { get; set; } = new();
+}
+
+public class LinkDefinition
+{
+    public string Label { get; set; } = "";
+    public string Url { get; set; } = "";     // template, e.g. https://server/.../{{id}}?mid={{id+1}}
 }
 
 public class TriggerDefinition
@@ -81,3 +89,4 @@ public class FieldDefinition
     public bool Required { get; set; }
     public List<string> Options { get; set; } = new();   // for "select"
 }
+

@@ -32,10 +32,10 @@ function ObservedRow({ i }) {
             <span className="tbadge"><Icon name="eye" size={20} /></span>
             <div className="tmain">
                 <b>{i.title}</b>
-                <small>{i.processName} · now at {i.currentStep || "–"}</small>
+                <small>{i.processName}{i.status === "Running" ? ` · now at ${i.currentStep || "–"}` : ""}</small>
             </div>
             <div className="tmeta">
-                <span className="tverb">{i.completedSteps} of {i.totalSteps} steps</span>
+                <span className="tverb">{i.status === "Running" ? `${i.completedSteps} of ${i.totalSteps} steps` : i.status}</span>
                 <small>Started {ago(i.createdAt)}</small>
             </div>
             <span className="tgo">View →</span>
@@ -60,6 +60,7 @@ export default function Tasks() {
         ["mine", "Assigned to me", data?.mine?.length],
         ["observing", "I am observing", data?.observing?.length],
         ["open", "Nobody assigned", data?.open?.length],
+        ["requested", "My requests", data?.requested?.length],
         ...(isAdmin ? [["others", "Assigned to others", data?.others?.length]] : []),
     ];
     const list = data?.[tab] || [];
@@ -68,6 +69,7 @@ export default function Tasks() {
         observing: ["Nothing to observe", "You are not observing any running request."],
         open: ["Nothing here", "Tasks that nobody is assigned to, in requests you started, appear here."],
         others: ["Nothing here", "No tasks are assigned to other people."],
+        requested: ["No requests", "Requests made for you appear here."],
     }[tab];
 
     return (
@@ -87,7 +89,7 @@ export default function Tasks() {
             </div>
 
             {data && list.length === 0 && <div className="empty"><b>{text[0]}</b>{text[1]}</div>}
-            {tab === "observing"
+            {tab === "observing" || tab === "requested"
                 ? list.map((i) => <ObservedRow key={i.id} i={i} />)
                 : list.map((t) => <TaskRow key={t.instanceId + t.stepKey} t={t} showWho={tab === "others"} />)}
         </>

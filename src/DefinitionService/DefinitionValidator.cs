@@ -14,6 +14,9 @@ public class DefinitionValidator
     private static readonly Regex AssigneeRegex = new(
     @"^([^\s@;,{}]+@[^\s@;,{}]+\.[^\s@;,{}]+|\{\{\s*[\w.\-]+\s*\}\})$", RegexOptions.Compiled);
 
+    private static readonly Regex LinkUrlStart =
+    new(@"^https?://[^/?#{}\s]+(?=[/?#]|$)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     private static void CheckAssignees(StepDefinition s, string p, List<string> errors)
     {
         foreach (var a in s.Assignees)
@@ -66,6 +69,15 @@ public class DefinitionValidator
             foreach (var o in d.Observers)
                 if (!AssigneeRegex.IsMatch(o.Trim()))
                     errors.Add("Observer '" + o + "' is not an email address or a {{field}} placeholder.");
+
+            foreach (var r in d.Requesters)
+                if (!AssigneeRegex.IsMatch(r.Trim()))
+                    errors.Add("Requester '" + r + "' must be an email address or a {{field}} placeholder.");
+            if (d.Requesters.Count > 5) errors.Add("At most 5 requester entries are allowed.");
+
+            foreach (var l in d.Links)
+                if (!LinkUrlStart.IsMatch((l.Url ?? "").Trim()))
+                    errors.Add("Link '" + l.Label + "': the address must start with http:// or https:// and a fixed server name.");
 
             if (!StepTypes.All.Contains(s.Type))
             {

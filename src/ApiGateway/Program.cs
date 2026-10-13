@@ -103,6 +103,7 @@ builder.Services.AddReverseProxy()
         h.Remove(InternalAuth.KeyHeader);
         h.Remove(InternalAuth.UserHeader);
         h.Remove(InternalAuth.RoleHeader);
+        h.Remove(InternalAuth.NameHeader);
         h.TryAddWithoutValidation(InternalAuth.KeyHeader, gatewayKey);
 
         var u = t.HttpContext.User;
@@ -110,6 +111,7 @@ builder.Services.AddReverseProxy()
         {
             h.TryAddWithoutValidation(InternalAuth.UserHeader, u.FindFirst("email")?.Value ?? "");
             h.TryAddWithoutValidation(InternalAuth.RoleHeader, u.FindFirst("role")?.Value ?? "");
+            h.TryAddWithoutValidation(InternalAuth.NameHeader, u.FindFirst("uname")?.Value ?? "");
         }
         return ValueTask.CompletedTask;
     }));
@@ -181,6 +183,7 @@ app.MapPost("/api/auth/login", async (
     var key = input.ToLowerInvariant();
 
     UserEntity? user = null;
+    string? sam = null;
     var ok = false;
 
     // 1. Local accounts first (the emergency admin, and anyone created as "local" in the Users page)
@@ -206,6 +209,7 @@ app.MapPost("/api/auth/login", async (
             user = await UpsertAdUser(db, a, adOpt);
             if (user != null) cache.Remove($"user:{user.Id}");
             ok = user != null;
+            sam = a.Username;
         }
     }
     else
@@ -216,12 +220,12 @@ app.MapPost("/api/auth/login", async (
     if (user is null || !ok || !user.IsActive)
         return Results.Json(new { error = "Invalid email or password." }, statusCode: 401);
 
-    var (token, expires) = tokens.Create(user);
+    var (token, expires) = tokens.Create(user, sam);
     return Results.Ok(new
     {
         token,
         expiresAt = expires,
-        user = new { email = user.Email, name = user.DisplayName, role = user.Role }
+        user = new { email = user.Email, name = user.DisplayName, role = user.Role, username = sam ?? user.Email }
     });
 }).RequireRateLimiting("login");
 
@@ -259,6 +263,7 @@ app.MapGet("/api/auth/me", (ClaimsPrincipal u) => Results.Ok(new
 {
     email = u.FindFirst("email")?.Value,
     name = u.FindFirst("name")?.Value,
+    username = u.FindFirst("uname")?.Value,
     role = u.FindFirst("role")?.Value
 })).RequireAuthorization("authenticated");
 

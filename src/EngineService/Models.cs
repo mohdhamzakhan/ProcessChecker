@@ -38,6 +38,7 @@ public class ProcessInstance
     public DateTime? CompletedAt { get; set; }
     public List<StepInstance> Steps { get; set; } = new();
     public string? Observers { get; set; }
+    public string? Requester { get; set; }
 }
 
 public class StepInstance
@@ -103,7 +104,7 @@ public record InstanceSummary(
     string Status, string? StartedBy, DateTime CreatedAt, DateTime? CompletedAt,
     int TotalSteps, int CompletedSteps, string? CurrentStep);
 public record InstanceDetail(InstanceSummary Summary, Dictionary<string, JsonElement> Data,
-    List<StepView> Steps, List<string> Observers);
+    List<StepView> Steps, List<string> Observers, List<string> Requesters);
 
 public record TaskItem(Guid InstanceId, string Title, string ProcessName,
     string StepKey, string StepName, string StepType, DateTime? Since, string? Assignees);

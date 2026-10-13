@@ -48,7 +48,7 @@ public class TokenService
         _hours = cfg.GetValue("Jwt:ExpiryHours", 8);
     }
 
-    public (string Token, DateTime Expires) Create(UserEntity u)
+    public (string Token, DateTime Expires) Create(UserEntity u, string? username = null)
     {
         var expires = DateTime.UtcNow.AddHours(_hours);
         var claims = new[]
@@ -56,7 +56,8 @@ public class TokenService
             new Claim("sub", u.Id.ToString()),
             new Claim("email", u.Email),
             new Claim("name", u.DisplayName),
-            new Claim("role", u.Role)
+            new Claim("role", u.Role),
+            new Claim("uname", (username ?? u.Email).ToLowerInvariant())
         };
         var jwt = new JwtSecurityToken("ProcessChecker", "ProcessChecker", claims,
             DateTime.UtcNow, expires, new SigningCredentials(_key, SecurityAlgorithms.HmacSha256));

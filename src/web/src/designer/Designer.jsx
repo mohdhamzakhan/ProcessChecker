@@ -374,7 +374,7 @@ export default function Designer() {
                         <StepProps key={selectedStep.uid} step={selectedStep} index={stepIndex} state={state}
                             change={change} connections={connections} />
                     ) : (
-                        <ProcessProps state={state} change={change} connections={connections} />
+                        <ProcessProps state={state} change={change} connections={connections} dirty={dirty} />
                     )}
                 </aside>
             </div>

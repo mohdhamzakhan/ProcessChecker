@@ -72,3 +72,9 @@ export async function fetchDocumentBlob(id) {
     if (!res.ok) await handle(res);
     return res.blob();
 }
+
+export async function fetchLinkBlob(instanceId, index) {
+    const res = await fetch(`/api/instances/${instanceId}/links/${index}/file`, { headers: authHeaders() });
+    if (!res.ok) await handle(res);
+    return res.blob();
+}

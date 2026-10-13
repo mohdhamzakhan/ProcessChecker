@@ -1,17 +1,17 @@
 ﻿import { useEffect, useState } from "react";
-import { downloadFile, fetchDocumentBlob } from "./api";
+import { downloadFile, fetchDocumentBlob, fetchLinkBlob } from "./api";
 import Icon from "./designer/Icon";
 
-/** source: { kind: "url", url, label }  or  { kind: "file", id, name } */
+/** source: { kind: "file", id, name }  or  { kind: "link", instanceId, index, url, label } */
 export default function Viewer({ source, onClose }) {
     const isFile = source.kind === "file";
-    const [st, setSt] = useState({ loading: isFile, error: "", blobUrl: "", type: "" });
+    const [st, setSt] = useState({ loading: true, error: "", blobUrl: "", type: "" });
 
     useEffect(() => {
-        if (!isFile) return undefined;
         let off = false;
         let objectUrl = "";
-        fetchDocumentBlob(source.id)
+        const get = isFile ? fetchDocumentBlob(source.id) : fetchLinkBlob(source.instanceId, source.index);
+        get
             .then((blob) => {
                 if (off) return;
                 objectUrl = URL.createObjectURL(blob);
@@ -19,7 +19,7 @@ export default function Viewer({ source, onClose }) {
             })
             .catch((e) => { if (!off) setSt({ loading: false, error: e.message, blobUrl: "", type: "" }); });
         return () => { off = true; if (objectUrl) URL.revokeObjectURL(objectUrl); };
-    }, [isFile, source.id]);
+    }, [isFile, source.id, source.instanceId, source.index]);
 
     useEffect(() => {
         const h = (e) => e.key === "Escape" && onClose();
@@ -28,35 +28,39 @@ export default function Viewer({ source, onClose }) {
     }, [onClose]);
 
     const title = isFile ? source.name || "File" : source.label || source.url;
-    const previewable = st.type === "application/pdf" || st.type.startsWith("image/") || st.type === "text/plain";
+    const ready = !st.loading && !st.error;
+    const isImage = st.type.startsWith("image/");
+    const isFrame = st.type === "application/pdf" || st.type === "text/plain";
+    const ext = st.type === "application/pdf" ? ".pdf" : "";
 
     return (
         <div className="vback" onClick={onClose}>
             <div className="vbox" onClick={(e) => e.stopPropagation()}>
                 <div className="vhead">
                     <b title={title}>{title}</b>
-                    {isFile
-                        ? <button className="secondary" onClick={() => downloadFile(source.id, source.name).catch((e) => alert(e.message))}>Download</button>
-                        : <a className="btn" href={source.url} target="_blank" rel="noopener noreferrer">Open in new tab</a>}
+                    {isFile && (
+                        <button className="secondary" onClick={() => downloadFile(source.id, source.name).catch((e) => alert(e.message))}>
+                            Download
+                        </button>
+                    )}
+                    {!isFile && ready && (
+                        <a className="btn" href={st.blobUrl} download={(source.label || "document") + ext}>Download</a>
+                    )}
+                    {!isFile && (
+                        <a className="btn" href={source.url} target="_blank" rel="noopener noreferrer">Open in new tab</a>
+                    )}
                     <button className="icon" onClick={onClose} title="Close"><Icon name="x" size={18} /></button>
                 </div>
 
                 <div className="vbody">
-                    {!isFile && <iframe title={title} src={source.url} referrerPolicy="no-referrer" />}
-                    {isFile && st.loading && <div className="vmsg">Loading…</div>}
-                    {isFile && st.error && <div className="vmsg">{st.error}</div>}
-                    {isFile && !st.loading && !st.error && previewable && st.type.startsWith("image/") && <img src={st.blobUrl} alt={title} />}
-                    {isFile && !st.loading && !st.error && previewable && !st.type.startsWith("image/") && <iframe title={title} src={st.blobUrl} />}
-                    {isFile && !st.loading && !st.error && !previewable && (
-                        <div className="vmsg">A preview is not available for this kind of file. Use Download.</div>
+                    {st.loading && <div className="vmsg">Loading…</div>}
+                    {st.error && <div className="vmsg"><b>Could not show the document</b><br />{st.error}</div>}
+                    {ready && isImage && <img src={st.blobUrl} alt={title} />}
+                    {ready && isFrame && <iframe title={title} src={st.blobUrl} />}
+                    {ready && !isImage && !isFrame && (
+                        <div className="vmsg">A preview is not available for this kind of document. Use Download{!isFile && " or Open in new tab"}.</div>
                     )}
                 </div>
-
-                {!isFile && (
-                    <div className="vnote">
-                        If this stays blank, the other server does not allow being shown inside another page, or it needs a sign-in. Use “Open in new tab”.
-                    </div>
-                )}
             </div>
         </div>
     );

@@ -204,7 +204,26 @@ public class WorkflowEngine
         }
 
         inst.DataJson = data.ToJson();
+        inst.Requester = Requesters.Resolve(def, data) ?? inst.Requester;
         await SaveAsync(inst, ct);
+    }
+
+    /// Works out the requester again for every request of a process, using the latest saved settings.
+    public async Task<int> ResolveRequestersAsync(ProcessDefinitionDto def, string processKey, CancellationToken ct)
+    {
+        var list = await _db.Instances.Include(i => i.Steps).ThenInclude(s => s.Approvals)
+            .Where(i => i.ProcessKey == processKey).ToListAsync(ct);
+        var n = 0;
+        foreach (var inst in list)
+        {
+            var req = Requesters.Resolve(def, DataBag.FromJson(inst.DataJson));
+            if (req == null || req == inst.Requester) continue;
+            inst.Requester = req;
+            n++;
+            await SyncParticipantsAsync(inst, ct);
+        }
+        await _db.SaveChangesAsync(ct);
+        return n;
     }
 
     private static void Apply(ProcessInstance inst, StepInstance step, StepResult r)
