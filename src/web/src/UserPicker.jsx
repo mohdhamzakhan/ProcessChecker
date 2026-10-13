@@ -96,7 +96,7 @@ export default function UserPicker({ value, onChange, fields = [], placeholder =
             {fields.length > 0 && (
                 <select value="" style={{ marginTop: 6 }}
                     onChange={(e) => e.target.value && add(`{{${e.target.value}}}`)}>
-                    <option value="">Take the person from a collected value (e.g. manager email)…</option>
+                    <option value="">Take the person from a collected value</option>
                     {fields.map((f) => <option key={f.name} value={f.name}>{f.label} ({f.source})</option>)}
                 </select>
             )}
