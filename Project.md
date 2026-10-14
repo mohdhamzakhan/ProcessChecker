@@ -38,12 +38,12 @@ src/
   ConnectorService/
   NotificationService/
   DocumentService/
-web/
-  src/
-    pages/                    Dashboard, Tasks, Requests, Processes, InstanceDetail,
+  web/
+    src/
+      pages/                    Dashboard, Tasks, Requests, Processes, InstanceDetail,
                               Dashboards, Connections, Users, Account, Login
-    designer/                 drag-and-drop process designer
-    links.js, UserPicker.jsx, Viewer.jsx, ui.jsx, api.js, user.jsx
+      designer/                 drag-and-drop process designer
+      links.js, UserPicker.jsx, Viewer.jsx, ui.jsx, api.js, user.jsx
 ```
 
 ## What users can do
