@@ -10,6 +10,7 @@ public static class StepTypes
     public const string Notify = "Notify";     // send an email notification
     public const string Link = "Link";   // build a link to a file or page
     public const string Decision = "Decision";   // if / else with two lanes
+    public const string End = "End";   // closes the request on this path
 
     public static readonly string[] All =
         { Approval, Form, Dispatch, Upload, DataFetch, Notify, Link  };
@@ -83,6 +84,8 @@ public class StepDefinition
     public RunIfDefinition? RunIf { get; set; }    // null or no conditions: the step always runs
     public RunIfDefinition? Condition { get; set; }  // Decision: the "if"
     public BranchDefinition? Branch { get; set; }    // set when the step sits in a lane of a Decision
+    public string? Outcome { get; set; }   // End: Completed | Rejected | Cancelled
+    public string? Reason { get; set; }    // End: text shown on the request, may contain {{placeholders}}
 }
 public class BranchDefinition
 {

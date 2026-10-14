@@ -334,6 +334,27 @@ function LinkHint({ url, fields }) {
 }
 
 // ---------------------------------------------------------------- panels
+function ApplyRequesters({ processKey, disabled }) {
+    const [msg, setMsg] = useState("");
+    const [busy, setBusy] = useState(false);
+    const run = async () => {
+        setBusy(true); setMsg("");
+        try {
+            const r = await api.post(`/api/instances/resolve-requesters?processKey=${encodeURIComponent(processKey)}`);
+            setMsg(`Updated ${r.updated} existing request(s).`);
+        } catch (e) { setMsg(e.message); } finally { setBusy(false); }
+    };
+    return (
+        <div>
+            <button type="button" className="secondary" disabled={disabled || busy} onClick={run}>
+                {busy ? "Working..." : "Apply to existing requests"}
+            </button>
+            {msg && <span className="small"> {msg}</span>}
+            {disabled && <p className="muted small">Save the process first.</p>}
+        </div>
+    );
+}
+
 function LinksEditor({ links, onChange, fields }) {
     const [sample, setSample] = useState('{"id": 41}');
     let data = {};
@@ -391,23 +412,19 @@ function LinksEditor({ links, onChange, fields }) {
         </div>
     );
 }
-function ApplyRequesters({ processKey, disabled }) {
-    const [msg, setMsg] = useState("");
-    const [busy, setBusy] = useState(false);
-    const run = async () => {
-        setBusy(true); setMsg("");
-        try {
-            const r = await api.post(`/api/instances/resolve-requesters?processKey=${encodeURIComponent(processKey)}`);
-            setMsg(`Updated ${r.updated} existing request(s).`);
-        } catch (e) { setMsg(e.message); } finally { setBusy(false); }
-    };
+
+export function LinksProps({ state, change }) {
+    const fields = availableFields(state, state.steps.length);
     return (
         <div>
-            <button type="button" className="secondary" disabled={disabled || busy} onClick={run}>
-                {busy ? "Working..." : "Apply to existing requests"}
-            </button>
-            {msg && <span className="small"> {msg}</span>}
-            {disabled && <p className="muted small">Save the process first.</p>}
+            <div className="phead" style={{ "--c": "#0d9488" }}>
+                <span className="badge-ico"><Icon name="link" size={18} /></span>
+                <div><small>Request page</small><b>Document links</b></div>
+            </div>
+            <div className="form">
+                <LinksEditor links={state.links || []} fields={fields}
+                    onChange={(links) => change((s) => ({ ...s, links }))} />
+            </div>
         </div>
     );
 }
@@ -681,6 +698,23 @@ export function StepProps({ step, index, state, change, connections }) {
                             <TestQuery connection={step.connection} schema={step.schema} query={step.query}
                                 onColumns={(cols) => patch({ columns: cols })} />
                         )}
+                    </>
+                )}
+                {step.type === "End" && (
+                    <>
+                        <label><span>How does the request end?</span>
+                            <select value={step.outcome} onChange={(e) => patch({ outcome: e.target.value })}>
+                                <option value="Completed">Completed (finished, nothing more to do)</option>
+                                <option value="Rejected">Rejected (not accepted, or not eligible)</option>
+                                <option value="Cancelled">Cancelled</option>
+                            </select></label>
+                        <label><span>Reason shown on the request (optional)</span>
+                            <PlaceholderInput value={step.reason} onChange={(v) => patch({ reason: v })} fields={fields}
+                                placeholder="Only domestic travel is handled by this process" /></label>
+                        <p className="muted small">
+                            When the request reaches this step it closes right away, and every step after it is skipped.
+                            Put it in an If or Else lane to stop on that path only. To tell someone first, put a Notify step before it.
+                        </p>
                     </>
                 )}
                 {step.type === "Decision" && (

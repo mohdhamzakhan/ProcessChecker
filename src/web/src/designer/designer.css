@@ -941,3 +941,19 @@ body.dnd-field .fields .dz {
 .preview {
     margin-top: 4px;
 }
+.laneempty {
+    align-self: center;
+    margin-top: 2px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+}
+
+    .laneempty button {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 5px 10px;
+        font-size: 12px;
+    }

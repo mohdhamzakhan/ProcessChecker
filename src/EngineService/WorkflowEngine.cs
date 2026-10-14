@@ -282,6 +282,26 @@ public class WorkflowEngine
                 step.Error = r.Error is { Length: > 1000 } ? r.Error[..1000] : r.Error;
                 inst.Status = InstanceStatus.Failed;
                 break;
+
+            case StepOutcome.Ended:
+                {
+                    step.Status = StepState.Completed;
+                    step.Error = null;
+                    step.CompletedAt = now;
+                    inst.Status = r.EndStatus is InstanceStatus.Rejected or InstanceStatus.Cancelled
+                        ? r.EndStatus : InstanceStatus.Completed;
+                    inst.CompletedAt = now;
+
+                    // everything still waiting will never run
+                    var why = $"the request ended at \"{step.StepName}\"";
+                    foreach (var rest in inst.Steps.Where(x => x.Status == StepState.Pending))
+                    {
+                        rest.Status = StepState.Skipped;
+                        rest.StartedAt = rest.CompletedAt = now;
+                        rest.OutputJson = JsonSerializer.Serialize(new { skipped = true, reason = why }, J);
+                    }
+                    break;
+                }
         }
     }
 

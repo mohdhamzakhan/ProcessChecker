@@ -34,17 +34,16 @@ export const STEP_TYPES = {
     Notify: { label: "Notify", icon: "bell", color: "#e11d48", hint: "Send an email notice" },
     Link: { label: "Document link", icon: "link", color: "#0d9488", hint: "Build a link to a file or page" },
     Decision: { label: "If / Else", icon: "branch", color: "#ea580c", hint: "Two paths: one when a condition is true, one when it is not" },
+    End: { label: "End request", icon: "stop", color: "#64748b", hint: "Close the request here, so nothing stays open" },
 };
 
-export const STEP_ORDER = ["Form", "Approval", "Dispatch", "Upload", "DataFetch", "Notify", "Link"];
+export const STEP_ORDER = ["Form", "Upload", "Approval", "Decision", "End", "Dispatch", "Notify", "DataFetch"];
 
 export const STEP_GROUPS = [
     { label: "Collect", types: ["Form", "Upload"] },
-    { label: "Decide", types: ["Approval"] },
+    { label: "Decide", types: ["Approval", "Decision", "End"] },
     { label: "Communicate", types: ["Dispatch", "Notify"] },
     { label: "Data", types: ["DataFetch"] },
-    { label: "Documents", types: ["Link"] },
-    { label: "Decide", types: ["Approval", "Decision"] },
 ];
 
 
@@ -92,6 +91,7 @@ export function newStep(type, steps) {
         runIf: { match: "all", conditions: [] },
         branch: null,
         condition: { match: "all", conditions: type === "Decision" ? [{ uid: uid(), field: "", op: "gt", value: "" }] : [] },
+        outcome: "Completed", reason: "",
     };
     if (type === "Form") st.fields = [newField("text", [])];
     return st;
@@ -126,6 +126,7 @@ function fromDefinitionBase(def) {
             assignees: s.assignees || [],
             observers: def.observers || [],
             requesters: def.requesters || [],
+            outcome: s.outcome || "Completed", reason: s.reason || "",
             runIf: s.runIf
                 ? {
                     match: s.runIf.match || "all",
@@ -182,6 +183,8 @@ function toDefinitionBase(s) {
                 return { ...base, url: st.url.trim(), linkLabel: st.linkLabel || undefined };
             case "Upload":
                 return { ...base, assignees: st.assignees };
+            case "End":
+                return { ...base, outcome: st.outcome, reason: st.reason || undefined };
             default:
                 return base;
         }

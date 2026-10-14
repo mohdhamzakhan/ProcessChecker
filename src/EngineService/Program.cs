@@ -41,6 +41,7 @@ builder.Services.AddScoped<IStepHandler, NotifyHandler>();
 builder.Services.AddScoped<IStepHandler, DataFetchHandler>();
 builder.Services.AddScoped<IStepHandler, LinkHandler>();
 builder.Services.AddScoped<IStepHandler, DecisionHandler>();
+builder.Services.AddScoped<IStepHandler, EndHandler>();
 builder.Services.AddScoped<TaskMailer>();
 
 builder.Services.AddScoped<WorkflowEngine>();

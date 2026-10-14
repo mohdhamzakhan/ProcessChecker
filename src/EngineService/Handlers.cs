@@ -7,14 +7,15 @@ using ProcessChecker.Contracts;
 
 namespace EngineService;
 
-public enum StepOutcome { Waiting, Completed, Rejected, Failed }
+public enum StepOutcome { Waiting, Completed, Rejected, Failed, Ended }
 
-public record StepResult(StepOutcome Outcome, object? Output = null, string? Error = null)
+public record StepResult(StepOutcome Outcome, object? Output = null, string? Error = null, string? EndStatus = null)
 {
     public static StepResult Wait(object? output = null) => new(StepOutcome.Waiting, output);
     public static StepResult Done(object? output = null) => new(StepOutcome.Completed, output);
     public static StepResult Reject(object? output = null) => new(StepOutcome.Rejected, output);
     public static StepResult Fail(string error) => new(StepOutcome.Failed, null, error);
+    public static StepResult End(string status, object? output = null) => new(StepOutcome.Ended, output, null, status);
 }
 
 public class StepContext
@@ -385,5 +386,18 @@ public class DecisionHandler : IStepHandler
         var result = pass ? "then" : "else";
         ctx.Data.Set($"{ctx.Step.StepKey}.result", result);       // the lane steps read this
         return Task.FromResult(StepResult.Done(new { result, reason = pass ? "The condition is true." : why }));
+    }
+}
+
+// ------------------------------------------------------------ End (closes the request)
+public class EndHandler : IStepHandler
+{
+    public string Type => StepTypes.End;
+
+    public Task<StepResult> StartAsync(StepContext ctx, CancellationToken ct)
+    {
+        var outcome = ctx.Def.Outcome is "Rejected" or "Cancelled" ? ctx.Def.Outcome : "Completed";
+        var reason = ctx.Data.Render(ctx.Def.Reason).Trim();
+        return Task.FromResult(StepResult.End(outcome, new { ended = true, outcome, reason }));
     }
 }

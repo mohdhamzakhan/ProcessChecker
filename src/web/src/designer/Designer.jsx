@@ -22,6 +22,7 @@ function summary(st) {
         case "DataFetch": return st.connection ? `Reads from ${st.connection}` : "No data source yet";
         case "Link": return st.url || "No address yet";
         case "Decision": return st.condition?.conditions?.length ? `If ${condSummary(st.condition)}` : "No condition yet";
+        case "End": return `${st.outcome || "Completed"}${st.reason ? ` · ${st.reason}` : ""}`;
         default: return "";
     }
 }
@@ -63,7 +64,14 @@ function Lane({ nodes, lane, ctx }) {
                 </Fragment>
             ))}
             <Connector id={`${key}:${nodes.length}`} lane={lane} index={nodes.length} ctx={ctx} />
-            {lane && nodes.length === 0 && <small className="muted laneempty">No steps on this path</small>}
+            {lane && nodes.length === 0 && (
+                <div className="laneempty">
+                    <small className="muted">No steps on this path</small>
+                    <button type="button" className="secondary" onClick={() => ctx.addStep("End", lane, 0)}>
+                        <Icon name="stop" size={13} />End the request here
+                    </button>
+                </div>
+            )}
         </>
     );
 }

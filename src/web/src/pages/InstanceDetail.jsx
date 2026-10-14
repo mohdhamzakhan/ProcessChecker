@@ -231,6 +231,7 @@ export default function InstanceDetail() {
     const needsRequester = isAdmin && (procDef?.requesters || []).length > 0 && (detail.requesters || []).length === 0;
 
     const active = detail.steps.find((x) => x.status === "InProgress" || x.status === "Failed");
+    const endedAt = detail.steps.find((x) => x.type === "End" && x.status === "Completed");
     const canCancel = canManage && (s.status === "Running" || s.status === "Failed");
     const built = links.map((l) => ({ ...l, ...buildLink(l.url, detail.data) }));
     const files = detail.steps.flatMap((st) => (st.output?.files || []).map((f) => ({ ...f, step: st.name })));
@@ -258,6 +259,14 @@ export default function InstanceDetail() {
                         {isRequester
                             ? "This is your request. An administrator is handling it, and any booking documents will appear below."
                             : "You are observing this request. You can follow it but you cannot act on it."}
+                    </span>
+                </div>
+            )}
+            {endedAt && (
+                <div className="hintbar">
+                    <Icon name="stop" size={16} />
+                    <span>
+                        This request ended at “{endedAt.name}”{endedAt.output?.reason ? `: ${endedAt.output.reason}` : "."}
                     </span>
                 </div>
             )}

@@ -177,6 +177,12 @@ public class DefinitionValidator
                         errors.Add($"{p}: an If / Else step needs at least one condition.");
                     else CheckConditions(s.Condition, p, errors);
                     break;
+                case StepTypes.End:
+                    if (s.Outcome is not (null or "Completed" or "Rejected" or "Cancelled"))
+                        errors.Add($"{p}: the outcome must be Completed, Rejected or Cancelled.");
+                    if ((s.Reason?.Length ?? 0) > 500)
+                        errors.Add($"{p}: the reason is too long (500 characters).");
+                    break;
             }
         }
 
