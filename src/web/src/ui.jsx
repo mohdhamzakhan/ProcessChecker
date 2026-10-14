@@ -47,6 +47,7 @@ export function Stepper({ steps }) {
         Rejected: <Icon name="x" size={16} stroke={3} />,
         InProgress: <Icon name="play" size={12} />,
         Pending: null,
+        Skipped: "–",
     };
     return (
         <div className="stepper">

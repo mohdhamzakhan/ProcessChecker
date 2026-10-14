@@ -207,6 +207,14 @@ export default function InstanceDetail() {
             .catch(() => setProcDef(null));
     }, [processKey]);
 
+    useEffect(() => {
+        if (!detail) return;
+        const built = links.map((l) => ({ ...l, ...buildLink(l.url, detail.data) }));
+        api.get(`/api/definitions/${encodeURIComponent(detail.summary.processKey)}`)
+            .then((r) => setLinks(r.definition.links || []))
+            .catch(() => setLinks([]));
+    }, [detail?.summary.processKey]);   // eslint-disable-line
+
     if (!detail) return <><ErrorBox error={error} /><p className="muted">Loading...</p></>;
 
     const s = detail.summary;
@@ -261,6 +269,24 @@ export default function InstanceDetail() {
             )}
 
             <Stepper steps={detail.steps} />
+
+            {built.length > 0 && (
+                <div className="panel">
+                    <h3>Documents</h3>
+                    {built.map((l, i) =>
+                        l.valid ? (
+                            <SafeLink key={i} url={l.url} label={l.label} />
+                        ) : (
+                            <div key={i} className="linkrow">
+                                <Icon name="link" size={16} />
+                                <span className="muted">
+                                    {l.label}: {l.missing.length ? `waiting for ${l.missing.join(", ")}` : "the address is not valid"}
+                                </span>
+                            </div>
+                        )
+                    )}
+                </div>
+            )}
 
             {(canManage || (detail.observers || []).length > 0) && (
                 <ObserversBar detail={detail} canEdit={canManage} onDone={(d) => setDetail(d)} />
@@ -317,7 +343,12 @@ export default function InstanceDetail() {
                                     )}
                                     {st.assignees && <div><small>Assigned to {st.assignees.join(", ")}</small></div>}
                                     {st.error && <div className="ok-err">{st.error}</div>}
-                                    {st.output && (
+                                    {st.type === "Decision" && st.output?.result && (
+                                        <div><small>Went the <b>{st.output.result === "then" ? "If true" : "Else"}</b> way. {st.output.reason}</small></div>
+                                    )}
+                                    {st.status === "Skipped" ? (
+                                        <div><small>Skipped: {st.output?.reason || "its condition was not met"}</small></div>
+                                    ) : st.output && (
                                         <details><summary>output</summary><pre>{JSON.stringify(st.output, null, 2)}</pre></details>
                                     )}
                                 </td>

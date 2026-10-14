@@ -19,6 +19,7 @@ public static class StepState
     public const string Completed = "Completed";
     public const string Rejected = "Rejected";
     public const string Failed = "Failed";
+    public const string Skipped = "Skipped";
 }
 
 public class ProcessInstance

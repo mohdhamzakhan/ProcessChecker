@@ -174,7 +174,8 @@ public class WorkflowEngine
     {
         while (inst.Status == InstanceStatus.Running)
         {
-            var step = inst.Steps.OrderBy(s => s.OrderNo).FirstOrDefault(s => s.Status != StepState.Completed);
+            var step = inst.Steps.OrderBy(s => s.OrderNo)
+               .FirstOrDefault(s => s.Status != StepState.Completed && s.Status != StepState.Skipped);
 
             if (step == null)
             {
@@ -185,6 +186,19 @@ public class WorkflowEngine
             if (step.Status != StepState.Pending) break;   // waiting for a person, or failed/rejected
 
             var sd = def.Steps.First(s => s.Key == step.StepKey);
+            var why = BranchBlocked(sd, def, data);
+            if (why == null)
+            {
+                var check = Conditions.Evaluate(sd.RunIf, data);
+                if (!check.Pass) why = check.Why;
+            }
+            if (why != null)
+            {
+                step.Status = StepState.Skipped;
+                step.StartedAt = step.CompletedAt = DateTime.UtcNow;
+                step.OutputJson = JsonSerializer.Serialize(new { skipped = true, reason = why }, J);
+                continue;
+            }
             step.Status = StepState.InProgress;
             step.StartedAt = DateTime.UtcNow;
 
@@ -207,7 +221,24 @@ public class WorkflowEngine
         inst.Requester = Requesters.Resolve(def, data) ?? inst.Requester;
         await SaveAsync(inst, ct);
     }
+    /// null = the step may run. Otherwise the reason it is skipped: a lane that was not taken.
+    private static string? BranchBlocked(StepDefinition sd, ProcessDefinitionDto def, DataBag data)
+    {
+        var cur = sd;
+        for (var guard = 0; cur.Branch != null && guard < 20; guard++)
+        {
+            var dec = def.Steps.FirstOrDefault(s => s.Key == cur.Branch.Of);
+            if (dec == null) return $"its If / Else step '{cur.Branch.Of}' no longer exists";
 
+            var result = data.GetString($"{dec.Key}.result");
+            if (string.IsNullOrEmpty(result)) return $"the decision '{dec.Name}' was not reached";
+            if (!string.Equals(result, cur.Branch.Path, StringComparison.OrdinalIgnoreCase))
+                return $"the decision '{dec.Name}' went the {(result == "then" ? "If true" : "Else")} way";
+
+            cur = dec;     // a nested decision is only reached through its own lane
+        }
+        return null;
+    }
     /// Works out the requester again for every request of a process, using the latest saved settings.
     public async Task<int> ResolveRequestersAsync(ProcessDefinitionDto def, string processKey, CancellationToken ct)
     {

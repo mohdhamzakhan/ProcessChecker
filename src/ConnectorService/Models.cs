@@ -11,10 +11,11 @@ public static class ConnectionTypes
     public const string Access = "Access";
     public const string Json = "Json";
     public const string Csv = "Csv";
+    public const string Api = "Api";
 
     public static readonly string[] ServerBased = { Oracle, SqlServer, MySql, PostgreSql };
     public static readonly string[] FileBased = { Access, Json, Csv };
-    public static readonly string[] All = ServerBased.Concat(FileBased).ToArray();
+    public static readonly string[] All = ServerBased.Concat(FileBased).Append(Api).ToArray();
 }
 
 public class FileSourceOptions

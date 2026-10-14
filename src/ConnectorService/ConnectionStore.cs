@@ -47,6 +47,20 @@ public class ConnectionStore
             if (!isUpdate && string.IsNullOrWhiteSpace(r.ConnectionString))
                 errors.Add("ConnectionString is required for this type.");
         }
+        else if (r.Type == ConnectionTypes.Api)
+        {
+            if (!Uri.TryCreate((r.FilePath ?? "").Trim(), UriKind.Absolute, out var baseUri) ||
+                (baseUri.Scheme != Uri.UriSchemeHttp && baseUri.Scheme != Uri.UriSchemeHttps))
+                errors.Add("The base address must start with http:// or https://.");
+            else if (baseUri.Query.Length > 0 || baseUri.Fragment.Length > 0 || baseUri.UserInfo.Length > 0)
+                errors.Add("The base address must not contain a query, a fragment or a user name.");
+
+            if (!isUpdate || !string.IsNullOrWhiteSpace(r.ConnectionString))
+            {
+                var (_, apiError) = ApiConfig.Parse(r.ConnectionString);
+                if (apiError != null) errors.Add(apiError);
+            }
+        }
         else
         {
             if (string.IsNullOrWhiteSpace(r.FilePath))

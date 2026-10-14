@@ -373,3 +373,17 @@ public class LinkHandler : IStepHandler
         return Task.FromResult(StepResult.Done(new { url, label }));
     }
 }
+
+// ------------------------------------------------------------ Decision (if / else)
+public class DecisionHandler : IStepHandler
+{
+    public string Type => StepTypes.Decision;
+
+    public Task<StepResult> StartAsync(StepContext ctx, CancellationToken ct)
+    {
+        var (pass, why) = Conditions.Evaluate(ctx.Def.Condition, ctx.Data);
+        var result = pass ? "then" : "else";
+        ctx.Data.Set($"{ctx.Step.StepKey}.result", result);       // the lane steps read this
+        return Task.FromResult(StepResult.Done(new { result, reason = pass ? "The condition is true." : why }));
+    }
+}

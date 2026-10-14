@@ -26,6 +26,7 @@ builder.Services.AddSingleton<IConnector, JsonFileConnector>();
 builder.Services.AddSingleton<IConnector, CsvFileConnector>();
 builder.Services.AddSingleton<ConnectorRegistry>();
 builder.Services.AddScoped<ConnectionStore>();
+builder.Services.AddSingleton<IConnector, ApiConnector>();
 
 
 builder.Services.AddMemoryCache();
@@ -94,9 +95,13 @@ app.MapGet("/api/connection-types", () => new[]
     new TypeDescriptor("Json", "JSON file", "file",
         @"C:\ProcessData\requests.json",
         "JSONPath, e.g. $.requests[?(@.status=='new')]. Empty = whole file"),
+    new TypeDescriptor("Api", "REST API (JSON)", "api",
+        "https://meaisrv014:9012/api",
+        "First line GET /path?x=:value. Optional: a line  -> $.data  to pick the rows, header lines (Name: value), and after a blank line a JSON body (POST)."),
     new TypeDescriptor("Csv", "CSV / flat file", "file",
         @"C:\ProcessData\requests.csv",
-        "Filter, e.g. status = new AND amount > 1000. Empty = all rows")
+        "Filter, e.g. status = new AND amount > 1000. Empty = all rows"),
+
 });
 
 // ---- Manage connections ----

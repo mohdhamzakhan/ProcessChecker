@@ -4,9 +4,10 @@ import { api } from "../api";
 import { ErrorBox } from "../ui";
 import Icon from "./Icon";
 import { DropZone, STEP_MIME, endDrag, startDrag } from "./dnd";
-import { ProcessProps, StepProps } from "./Props";
+import { LinksProps, ProcessProps, StepProps } from "./Props";
 import {
-    STEP_GROUPS, STEP_ORDER, STEP_TYPES, allIssues, blankState, fromDefinition, newStep,
+    STEP_GROUPS, STEP_ORDER, STEP_TYPES, allIssues, blankState, buildTree, condSummary, countInside,
+    fromDefinition, insertStep, laneSize, locate, moveStep, newStep, removeStep, shiftStep,
     slugKey, stepIssues, toDefinition, uid, unique,
 } from "./model";
 import "./designer.css";
@@ -14,24 +15,24 @@ import "./designer.css";
 function summary(st) {
     switch (st.type) {
         case "Form": return `${st.fields.length} field${st.fields.length === 1 ? "" : "s"}${st.allowUpload ? " + attachment" : ""}${st.assignees?.length ? ` · for ${st.assignees.length}` : ""}`;
-        case "Upload": return st.assignees?.length ? `For ${st.assignees.join(", ")}` : "Waits for a file";
         case "Approval": return st.approvers.length ? st.approvers.join(", ") : "No approvers yet";
         case "Dispatch":
         case "Notify": return st.sendTo ? `To ${st.sendTo}` : "No recipient yet";
-        case "Upload": return "Waits for a file";
+        case "Upload": return st.assignees?.length ? `For ${st.assignees.join(", ")}` : "Waits for a file";
         case "DataFetch": return st.connection ? `Reads from ${st.connection}` : "No data source yet";
         case "Link": return st.url || "No address yet";
-
+        case "Decision": return st.condition?.conditions?.length ? `If ${condSummary(st.condition)}` : "No condition yet";
         default: return "";
     }
 }
 
-function Connector({ at, menuAt, setMenuAt, onDropStep, onAdd }) {
-    const open = menuAt === at;
+/** The + between two steps; also a drop target. lane = null (main flow) or { of, path }. */
+function Connector({ id, lane, index, ctx }) {
+    const open = ctx.menuAt === id;
     return (
-        <DropZone mime={STEP_MIME} label="Drop here" onDrop={(p) => onDropStep(p, at)}>
+        <DropZone mime={STEP_MIME} label="Drop here" onDrop={(p) => ctx.onDropStep(p, lane, index)}>
             <button type="button" className={`plus${open ? " open" : ""}`} title="Insert a step here"
-                onClick={(e) => { e.stopPropagation(); setMenuAt(open ? null : at); }}>
+                onClick={(e) => { e.stopPropagation(); ctx.setMenuAt(open ? null : id); }}>
                 <Icon name="plus" size={14} stroke={2.5} />
             </button>
             {open && (
@@ -40,7 +41,7 @@ function Connector({ at, menuAt, setMenuAt, onDropStep, onAdd }) {
                         const m = STEP_TYPES[type];
                         return (
                             <button key={type} type="button" style={{ "--c": m.color }}
-                                onClick={() => { onAdd(type, at); setMenuAt(null); }}>
+                                onClick={() => { ctx.addStep(type, lane, index); ctx.setMenuAt(null); }}>
                                 <span className="pbadge"><Icon name={m.icon} size={16} /></span>{m.label}
                             </button>
                         );
@@ -48,6 +49,74 @@ function Connector({ at, menuAt, setMenuAt, onDropStep, onAdd }) {
                 </div>
             )}
         </DropZone>
+    );
+}
+
+function Lane({ nodes, lane, ctx }) {
+    const key = lane ? `${lane.of}:${lane.path}` : "root";
+    return (
+        <>
+            {nodes.map((n, i) => (
+                <Fragment key={n.step.uid}>
+                    <Connector id={`${key}:${i}`} lane={lane} index={i} ctx={ctx} />
+                    <NodeView n={n} first={i === 0} last={i === nodes.length - 1} ctx={ctx} />
+                </Fragment>
+            ))}
+            <Connector id={`${key}:${nodes.length}`} lane={lane} index={nodes.length} ctx={ctx} />
+            {lane && nodes.length === 0 && <small className="muted laneempty">No steps on this path</small>}
+        </>
+    );
+}
+
+function NodeView({ n, first, last, ctx }) {
+    const st = n.step;
+    const m = STEP_TYPES[st.type];
+    const bad = stepIssues(st, ctx.steps).length > 0;
+    const number = ctx.steps.findIndex((x) => x.uid === st.uid) + 1;
+
+    const card = (
+        <div className={`scard${st.type === "Decision" ? " decision" : ""}${ctx.selected === st.uid ? " sel" : ""}${bad ? " bad" : ""}`}
+            style={{ "--c": m.color }} draggable
+            onDragStart={(e) => startDrag(e, STEP_MIME, { kind: "move", uid: st.uid })}
+            onDragEnd={endDrag}
+            onClick={() => ctx.setSelected(st.uid)}>
+            <Icon name="grip" size={16} className="grip" />
+            <span className="sbadge"><Icon name={m.icon} size={20} /></span>
+            <div className="smain">
+                <div className="skind">Step {number} · {m.label}</div>
+                <div className="stitle">{st.name || "(unnamed)"}</div>
+                <div className="ssub">{summary(st)}</div>
+                {st.type !== "Decision" && st.runIf?.conditions?.length > 0 && (
+                    <div className="scond" title={condSummary(st.runIf)}>
+                        <Icon name="branch" size={11} />If {condSummary(st.runIf)}
+                    </div>
+                )}
+            </div>
+            {bad && <span className="needs" title="This step needs attention"><Icon name="alert" size={13} /></span>}
+            <div className="sbtns" onClick={(e) => e.stopPropagation()}>
+                <button className="icon" title="Move up" disabled={first} onClick={() => ctx.shift(st.uid, -1)}><Icon name="up" size={15} /></button>
+                <button className="icon" title="Move down" disabled={last} onClick={() => ctx.shift(st.uid, 1)}><Icon name="down" size={15} /></button>
+                <button className="icon" title="Duplicate" onClick={() => ctx.duplicate(st.uid)}><Icon name="copy" size={15} /></button>
+                <button className="icon danger" title="Remove" onClick={() => ctx.remove(st.uid)}><Icon name="trash" size={15} /></button>
+            </div>
+        </div>
+    );
+
+    if (st.type !== "Decision") return card;
+
+    return (
+        <>
+            {card}
+            <div className="lanes">
+                {["then", "else"].map((path) => (
+                    <div key={path} className={`lane ${path}`}>
+                        <span className="lanehead">{path === "then" ? "If true" : "Else"}</span>
+                        <Lane nodes={n[path]} lane={{ of: st.uid, path }} ctx={ctx} />
+                    </div>
+                ))}
+            </div>
+            <div className="merge" />
+        </>
     );
 }
 
@@ -75,7 +144,6 @@ export default function Designer() {
         setError(null); setMsg(""); setSelected("process"); setPanel(null);
         if (!routeKey) { setState(blankState()); setVersion(null); setDirty(false); setLoading(false); return; }
         setLoading(true);
-
         api.get(`/api/definitions/${encodeURIComponent(routeKey)}`)
             .then((r) => { setState(fromDefinition(r.definition)); setVersion(r.version); setDirty(false); })
             .catch(setError)
@@ -106,73 +174,56 @@ export default function Designer() {
 
     const change = (fn) => { setState(fn); setDirty(true); setMsg(""); };
     const issues = useMemo(() => allIssues(state), [state]);
+    const tree = useMemo(() => buildTree(state.steps), [state.steps]);
     const stepIndex = state.steps.findIndex((s) => s.uid === selected);
     const selectedStep = stepIndex >= 0 ? state.steps[stepIndex] : null;
+    const branched = state.steps.some((s) => s.type === "Decision");
 
     // ---------------------------------------------------------- canvas actions
-    const addStep = (type, at) => {
+    const addStep = (type, lane = null, index = null) => {
         const st = newStep(type, state.steps);
-        change((s) => {
-            const steps = [...s.steps];
-            steps.splice(at ?? steps.length, 0, st);
-            return { ...s, steps };
-        });
+        change((s) => ({ ...s, steps: insertStep(s.steps, st, lane, index ?? laneSize(s.steps, lane)) }));
         setSelected(st.uid);
     };
 
-    const moveStep = (id, to) =>
-        change((s) => {
-            const from = s.steps.findIndex((x) => x.uid === id);
-            if (from < 0) return s;
-            const steps = [...s.steps];
-            const [item] = steps.splice(from, 1);
-            steps.splice(to > from ? to - 1 : to, 0, item);
-            return { ...s, steps };
-        });
+    const onDropStep = (p, lane, index) =>
+        p.kind === "new"
+            ? addStep(p.type, lane, index)
+            : change((s) => ({ ...s, steps: moveStep(s.steps, p.uid, lane, index) }));
 
-    const shift = (id, dir) => {
-        const i = state.steps.findIndex((x) => x.uid === id);
-        const j = i + dir;
-        if (i < 0 || j < 0 || j >= state.steps.length) return;
-        change((s) => {
-            const steps = [...s.steps];
-            [steps[i], steps[j]] = [steps[j], steps[i]];
-            return { ...s, steps };
-        });
-    };
+    const shift = (id, dir) => change((s) => ({ ...s, steps: shiftStep(s.steps, id, dir) }));
 
     const duplicate = (id) => {
-        const i = state.steps.findIndex((x) => x.uid === id);
-        if (i < 0) return;
-        const src = state.steps[i];
+        const src = state.steps.find((x) => x.uid === id);
+        if (!src) return;
         const copy = {
             ...src, uid: uid(), name: `${src.name} (copy)`,
             key: unique(src.key, new Set(state.steps.map((s) => s.key))),
-            approvers: [...src.approvers], columns: [...(src.columns || [])],
-            fields: src.fields.map((f) => ({ ...f, uid: uid(), options: [...f.options] })),
+            approvers: [...(src.approvers || [])], assignees: [...(src.assignees || [])],
+            columns: [...(src.columns || [])],
+            fields: (src.fields || []).map((f) => ({ ...f, uid: uid(), options: [...f.options] })),
+            runIf: { match: src.runIf?.match || "all", conditions: (src.runIf?.conditions || []).map((c) => ({ ...c, uid: uid() })) },
+            condition: { match: src.condition?.match || "all", conditions: (src.condition?.conditions || []).map((c) => ({ ...c, uid: uid() })) },
         };
-        change((s) => {
-            const steps = [...s.steps];
-            steps.splice(i + 1, 0, copy);
-            return { ...s, steps };
-        });
+        const at = locate(state.steps, id);
+        change((s) => ({ ...s, steps: insertStep(s.steps, copy, at.lane, at.index + 1) }));
         setSelected(copy.uid);
     };
 
     const remove = (id) => {
-        if (!confirm("Remove this step?")) return;
-        change((s) => ({ ...s, steps: s.steps.filter((x) => x.uid !== id) }));
+        const inside = countInside(state.steps, id);
+        if (!confirm(inside ? `Remove this step and the ${inside} step${inside === 1 ? "" : "s"} inside it?` : "Remove this step?")) return;
+        change((s) => ({ ...s, steps: removeStep(s.steps, id) }));
         setSelected("process");
     };
 
-    const onDropStep = (p, at) => (p.kind === "new" ? addStep(p.type, at) : moveStep(p.uid, at));
+    const ctx = { steps: state.steps, selected, setSelected, menuAt, setMenuAt, onDropStep, addStep, shift, duplicate, remove };
 
     // ---------------------------------------------------------- saving
     const save = async () => {
         if (issues.length) return;
         setBusy(true); setError(null); setMsg("");
         try {
-
             const res = await api.post("/api/definitions", toDefinition(state));
             setVersion(res.version);
             setDirty(false);
@@ -310,7 +361,7 @@ export default function Designer() {
                 </aside>
 
                 <section className="pane canvas">
-                    <div className="flow">
+                    <div className={`flow${branched ? " branched" : ""}`}>
                         <div className={`node start${selected === "process" ? " sel" : ""}`} onClick={() => setSelected("process")}>
                             <span className="nbadge"><Icon name="play" size={15} /></span>
                             <div><b>Start</b><small>{startText}</small></div>
@@ -319,7 +370,7 @@ export default function Designer() {
                         {state.steps.length === 0 ? (
                             <>
                                 <div className="line" />
-                                <DropZone big mime={STEP_MIME} onDrop={(p) => onDropStep(p, 0)}>
+                                <DropZone big mime={STEP_MIME} onDrop={(p) => onDropStep(p, null, 0)}>
                                     <div className="empty-flow">
                                         <Icon name="workflow" size={30} />
                                         <b>Start building your process</b>
@@ -328,49 +379,28 @@ export default function Designer() {
                                 </DropZone>
                             </>
                         ) : (
-                            <>
-                                {state.steps.map((st, i) => {
-                                    const m = STEP_TYPES[st.type];
-                                    const bad = stepIssues(st, state.steps).length > 0;
-                                    return (
-                                        <Fragment key={st.uid}>
-                                            <Connector at={i} menuAt={menuAt} setMenuAt={setMenuAt} onDropStep={onDropStep} onAdd={addStep} />
-                                            <div className={`scard${selected === st.uid ? " sel" : ""}${bad ? " bad" : ""}`}
-                                                style={{ "--c": m.color }} draggable
-                                                onDragStart={(e) => startDrag(e, STEP_MIME, { kind: "move", uid: st.uid })}
-                                                onDragEnd={endDrag}
-                                                onClick={() => setSelected(st.uid)}>
-                                                <Icon name="grip" size={16} className="grip" />
-                                                <span className="sbadge"><Icon name={m.icon} size={20} /></span>
-                                                <div className="smain">
-                                                    <div className="skind">Step {i + 1} · {m.label}</div>
-                                                    <div className="stitle">{st.name || "(unnamed)"}</div>
-                                                    <div className="ssub">{summary(st)}</div>
-                                                </div>
-                                                {bad && <span className="needs" title="This step needs attention"><Icon name="alert" size={13} /></span>}
-                                                <div className="sbtns" onClick={(e) => e.stopPropagation()}>
-                                                    <button className="icon" title="Move up" disabled={i === 0} onClick={() => shift(st.uid, -1)}><Icon name="up" size={15} /></button>
-                                                    <button className="icon" title="Move down" disabled={i === state.steps.length - 1} onClick={() => shift(st.uid, 1)}><Icon name="down" size={15} /></button>
-                                                    <button className="icon" title="Duplicate" onClick={() => duplicate(st.uid)}><Icon name="copy" size={15} /></button>
-                                                    <button className="icon danger" title="Remove" onClick={() => remove(st.uid)}><Icon name="trash" size={15} /></button>
-                                                </div>
-                                            </div>
-                                        </Fragment>
-                                    );
-                                })}
-                                <Connector at={state.steps.length} menuAt={menuAt} setMenuAt={setMenuAt} onDropStep={onDropStep} onAdd={addStep} />
-                            </>
+                            <Lane nodes={tree} lane={null} ctx={ctx} />
                         )}
 
                         <div className="node end">
                             <span className="nbadge"><Icon name="stop" size={14} /></span>
                             <div><b>End</b><small>The request is completed</small></div>
                         </div>
+
+                        <div className={`node docs${selected === "links" ? " sel" : ""}`} onClick={() => setSelected("links")}>
+                            <span className="nbadge"><Icon name="link" size={15} /></span>
+                            <div>
+                                <b>Document links</b>
+                                <small>{(state.links || []).length ? `${state.links.length} shown on every request` : "None yet. Click to add"}</small>
+                            </div>
+                        </div>
                     </div>
                 </section>
 
                 <aside className="pane props">
-                    {selectedStep ? (
+                    {selected === "links" ? (
+                        <LinksProps state={state} change={change} />
+                    ) : selectedStep ? (
                         <StepProps key={selectedStep.uid} step={selectedStep} index={stepIndex} state={state}
                             change={change} connections={connections} />
                     ) : (

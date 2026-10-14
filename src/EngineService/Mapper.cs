@@ -15,7 +15,7 @@ public static class Mapper
         return new InstanceSummary(
             i.Id, i.ProcessKey, i.ProcessName, i.ProcessVersion, i.Title, i.Status,
             i.StartedBy, i.CreatedAt, i.CompletedAt,
-            steps.Count, steps.Count(s => s.Status == StepState.Completed), current?.StepName);
+            steps.Count, steps.Count(s => s.Status is StepState.Completed or StepState.Skipped), current?.StepName);
     }
 
     public static InstanceDetail ToDetail(ProcessInstance i)

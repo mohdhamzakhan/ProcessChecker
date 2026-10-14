@@ -9,6 +9,7 @@ public static class StepTypes
     public const string DataFetch = "DataFetch";  // query a named database connection
     public const string Notify = "Notify";     // send an email notification
     public const string Link = "Link";   // build a link to a file or page
+    public const string Decision = "Decision";   // if / else with two lanes
 
     public static readonly string[] All =
         { Approval, Form, Dispatch, Upload, DataFetch, Notify, Link  };
@@ -79,8 +80,15 @@ public class StepDefinition
     public string? Url { get; set; }         // template, supports {{field}} and {{field+1}}
     public string? LinkLabel { get; set; }   // text shown for the link
     public List<string> Assignees { get; set; } = new();   // Form/Upload: who may do it (empty = anyone)
+    public RunIfDefinition? RunIf { get; set; }    // null or no conditions: the step always runs
+    public RunIfDefinition? Condition { get; set; }  // Decision: the "if"
+    public BranchDefinition? Branch { get; set; }    // set when the step sits in a lane of a Decision
 }
-
+public class BranchDefinition
+{
+    public string Of { get; set; } = "";       // key of the Decision step this step belongs to
+    public string Path { get; set; } = "then"; // then | else
+}
 public class FieldDefinition
 {
     public string Name { get; set; } = "";
@@ -89,4 +97,17 @@ public class FieldDefinition
     public bool Required { get; set; }
     public List<string> Options { get; set; } = new();   // for "select"
 }
+public class ConditionDefinition
+{
+    public string Field { get; set; } = "";
+    public string Op { get; set; } = "eq";     // eq ne gt gte lt lte contains notcontains in notin empty notempty
+    public string? Value { get; set; }         // may contain {{placeholders}}
+}
+
+public class RunIfDefinition
+{
+    public string Match { get; set; } = "all"; // all | any
+    public List<ConditionDefinition> Conditions { get; set; } = new();
+}
+
 

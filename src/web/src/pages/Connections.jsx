@@ -1,6 +1,7 @@
 ﻿import { useEffect, useState } from "react";
 import { api } from "../api";
 import { ErrorBox } from "../ui";
+import ApiFields, { apiPayload, defaultApi } from "../ApiFields";
 
 const SCHEMA_TYPES = ["Oracle", "PostgreSql"];
 
@@ -31,6 +32,9 @@ export default function Connections() {
     const [params, setParams] = useState("");
     const [out, setOut] = useState(null);
 
+    const [baseUrl, setBaseUrl] = useState("");
+    const [apiCfg, setApiCfg] = useState(defaultApi());
+
     const load = () => api.get("/api/connections").then(setList).catch(setError);
     useEffect(() => {
         api.get("/api/connection-types").then(setTypes).catch(setError);
@@ -39,6 +43,7 @@ export default function Connections() {
 
     const t = types.find((x) => x.type === type);
     const isFile = t?.kind === "file";
+    const isApi = t?.kind === "api";
     const newSupportsSchemas = SCHEMA_TYPES.includes(type);
 
     const qc = list.find((c) => c.name === qConn);
@@ -83,14 +88,14 @@ export default function Connections() {
         try {
             await api.post("/api/connections", {
                 name, type, description: desc || undefined,
-                connectionString: isFile ? undefined : connStr,
-                filePath: isFile ? filePath : undefined,
+                connectionString: isApi ? JSON.stringify(apiPayload(apiCfg)) : isFile ? undefined : connStr,
+                filePath: isApi ? baseUrl.trim() : isFile ? filePath : undefined,
                 options: type === "Csv" ? { delimiter, hasHeader } : undefined,
                 defaultSchema: newSupportsSchemas && defSchema ? defSchema : undefined,
                 allowedSchemas: newSupportsSchemas
                     ? allowed.split(",").map((s) => s.trim()).filter(Boolean) : undefined,
             });
-            setName(""); setConnStr(""); setFilePath(""); setDesc(""); setDefSchema(""); setAllowed(""); setError(null);
+            setName(""); setConnStr(""); setFilePath(""); setDesc(""); setDefSchema(""); setAllowed(""); setError(null); setBaseUrl(""); setApiCfg(defaultApi());
             load();
         } catch (e) { setError(e); }
     };
@@ -151,7 +156,9 @@ export default function Connections() {
                             {types.map((x) => <option key={x.type} value={x.type}>{x.label}</option>)}
                         </select>
                     </label>
-                    {isFile ? (
+                    {isApi ? (
+                        <ApiFields baseUrl={baseUrl} setBaseUrl={setBaseUrl} cfg={apiCfg} setCfg={setApiCfg} />
+                    ) : isFile ? (
                         <label><span>File path</span>
                             <input placeholder={t?.example} value={filePath} onChange={(e) => setFilePath(e.target.value)} /></label>
                     ) : (

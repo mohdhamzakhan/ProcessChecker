@@ -1,4 +1,29 @@
 ﻿export const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+export const OPS = {
+    eq: { label: "is equal to", short: "=", needsValue: true, not: "ne" },
+    ne: { label: "is not equal to", short: "≠", needsValue: true, not: "eq" },
+    gt: { label: "is greater than", short: ">", needsValue: true, not: "lte" },
+    gte: { label: "is greater than or equal to", short: "≥", needsValue: true, not: "lt" },
+    lt: { label: "is less than", short: "<", needsValue: true, not: "gte" },
+    lte: { label: "is less than or equal to", short: "≤", needsValue: true, not: "gt" },
+    contains: { label: "contains", short: "contains", needsValue: true, not: "notcontains" },
+    notcontains: { label: "does not contain", short: "doesn't contain", needsValue: true, not: "contains" },
+    in: { label: "is one of (comma separated)", short: "is one of", needsValue: true, not: "notin" },
+    notin: { label: "is none of (comma separated)", short: "is none of", needsValue: true, not: "in" },
+    empty: { label: "is empty", short: "is empty", needsValue: false, not: "notempty" },
+    notempty: { label: "is not empty", short: "is filled in", needsValue: false, not: "empty" },
+};
+
+export const condSummary = (r) =>
+    (r?.conditions || [])
+        .map((c) => `${c.field || "?"} ${OPS[c.op]?.short || c.op}${OPS[c.op]?.needsValue ? ` ${c.value}` : ""}`)
+        .join(r?.match === "any" ? " or " : " and ");
+
+/** The else: not(all of A) = any of the opposites, not(any of A) = all of the opposites. */
+export const invertConditions = (r) => ({
+    match: r.match === "any" ? "all" : "any",
+    conditions: r.conditions.map((c) => ({ ...c, uid: uid(), op: OPS[c.op]?.not || c.op })),
+});
 
 export const STEP_TYPES = {
     Form: { label: "Form", icon: "form", color: "#2563eb", hint: "Collect details from a person" },
@@ -8,6 +33,7 @@ export const STEP_TYPES = {
     DataFetch: { label: "Fetch data", icon: "database", color: "#0891b2", hint: "Read rows from a database" },
     Notify: { label: "Notify", icon: "bell", color: "#e11d48", hint: "Send an email notice" },
     Link: { label: "Document link", icon: "link", color: "#0d9488", hint: "Build a link to a file or page" },
+    Decision: { label: "If / Else", icon: "branch", color: "#ea580c", hint: "Two paths: one when a condition is true, one when it is not" },
 };
 
 export const STEP_ORDER = ["Form", "Approval", "Dispatch", "Upload", "DataFetch", "Notify", "Link"];
@@ -18,6 +44,7 @@ export const STEP_GROUPS = [
     { label: "Communicate", types: ["Dispatch", "Notify"] },
     { label: "Data", types: ["DataFetch"] },
     { label: "Documents", types: ["Link"] },
+    { label: "Decide", types: ["Approval", "Decision"] },
 ];
 
 
@@ -61,7 +88,10 @@ export function newStep(type, steps) {
     const key = unique(slugKey(name) || "step", new Set(steps.map((s) => s.key)));
     const st = {
         uid: uid(), key, name, type, approvers: [], fields: [], allowUpload: false,
-        sendTo: "", subject: "", body: "", url: "", linkLabel: "", connection: "", schema: "", query: "", columns: [], assignees: []
+        sendTo: "", subject: "", body: "", url: "", linkLabel: "", connection: "", schema: "", query: "", columns: [], assignees: [],
+        runIf: { match: "all", conditions: [] },
+        branch: null,
+        condition: { match: "all", conditions: type === "Decision" ? [{ uid: uid(), field: "", op: "gt", value: "" }] : [] },
     };
     if (type === "Form") st.fields = [newField("text", [])];
     return st;
@@ -72,11 +102,12 @@ export const blankState = () => ({
     trigger: { type: "Manual", connection: "", schema: "", query: "", keyColumn: "", everyMinutes: 5 },
     triggerColumns: [],
     steps: [],
+    links: [],
     observers: [],
     requesters: [],
 });
 
-export function fromDefinition(def) {
+function fromDefinitionBase(def) {
     const t = def.trigger || {};
     return {
         isNew: false, keyTouched: true, key: def.key, name: def.name, description: def.description || "",
@@ -95,16 +126,23 @@ export function fromDefinition(def) {
             assignees: s.assignees || [],
             observers: def.observers || [],
             requesters: def.requesters || [],
+            runIf: s.runIf
+                ? {
+                    match: s.runIf.match || "all",
+                    conditions: (s.runIf.conditions || []).map((c) => ({ uid: uid(), field: c.field || "", op: c.op || "eq", value: c.value ?? "" }))
+                }
+                : { match: "all", conditions: [] },
             fields: (s.fields || []).map((f) => ({
                 uid: uid(), name: f.name, label: f.label || f.name, type: f.type || "text",
                 required: !!f.required, options: f.options || [], nameAuto: false,
             })),
         })),
+        links: (def.links || []).map((l) => ({ uid: uid(), label: l.label || "", url: l.url || "" })),
     };
 }
 
 /** The JSON the engine understands. */
-export function toDefinition(s) {
+function toDefinitionBase(s) {
     const t = s.trigger;
     const trigger = t.type === "DatabasePoll"
         ? {
@@ -114,7 +152,15 @@ export function toDefinition(s) {
         : { type: "Manual" };
 
     const steps = s.steps.map((st) => {
-        const base = { key: st.key, name: st.name.trim(), type: st.type };
+        const runIf = st.runIf?.conditions?.length
+            ? {
+                match: st.runIf.match,
+                conditions: st.runIf.conditions.map((c) => ({
+                    field: c.field.trim(), op: c.op, value: OPS[c.op]?.needsValue ? String(c.value ?? "") : undefined
+                }))
+            }
+            : undefined;
+        const base = { key: st.key, name: st.name.trim(), type: st.type, runIf };
         switch (st.type) {
             case "Approval":
                 return { ...base, approvers: st.approvers };
@@ -140,11 +186,50 @@ export function toDefinition(s) {
                 return base;
         }
     });
-
+    const links = (s.links || [])
+        .filter((l) => l.url.trim())
+        .map((l) => ({ label: l.label.trim() || "Open document", url: l.url.trim() }));
     return {
         key: s.key, name: s.name.trim(), description: s.description || undefined, trigger, steps, links,
         observers: s.observers || [], requesters: s.requesters || [],
     };
+}
+
+const normCond = (c) => ({
+    match: c?.match === "any" ? "any" : "all",
+    conditions: (c?.conditions || []).map((x) => ({ uid: uid(), field: x.field || "", op: x.op || "eq", value: x.value ?? "" })),
+});
+
+export function fromDefinition(def) {
+    const base = fromDefinitionBase(def);
+    const byKey = Object.fromEntries(base.steps.map((x) => [x.key, x.uid]));
+    const steps = base.steps.map((x, i) => {
+        const raw = (def.steps || [])[i] || {};
+        const b = raw.branch && byKey[raw.branch.of]
+            ? { of: byKey[raw.branch.of], path: raw.branch.path === "else" ? "else" : "then" }
+            : null;
+        return { ...x, branch: b, condition: normCond(raw.condition) };
+    });
+    return { ...base, steps };
+}
+
+export function toDefinition(s) {
+    const def = toDefinitionBase(s);
+    const keyOf = Object.fromEntries(s.steps.map((x) => [x.uid, x.key]));
+    def.steps = def.steps.map((out, i) => {
+        const st = s.steps[i];
+        const extra = {};
+        if (st.type === "Decision")
+            extra.condition = {
+                match: st.condition?.match === "any" ? "any" : "all",
+                conditions: (st.condition?.conditions || []).map((c) => ({
+                    field: c.field.trim(), op: c.op, value: OPS[c.op]?.needsValue ? String(c.value ?? "") : undefined,
+                })),
+            };
+        if (st.branch && keyOf[st.branch.of]) extra.branch = { of: keyOf[st.branch.of], path: st.branch.path };
+        return { ...out, ...extra };
+    });
+    return def;
 }
 
 /** Values collected before step `index`: usable as {{name}} in later steps. */
@@ -180,6 +265,18 @@ export function stepIssues(st, all) {
     else if (all.filter((x) => x.key === st.key).length > 1) out.push("Another step has the same key.");
     const badWho = (st.assignees || []).filter((a) => !(isEmail(a) || isPlaceholder(a)));
     if (badWho.length) out.push(`Not an email or {{field}}: ${badWho.join(", ")}.`);
+    (st.runIf?.conditions || []).forEach((c, n) => {
+        if (!c.field.trim() || !/^[\w.\-]+$/.test(c.field.trim())) out.push(`Condition ${n + 1} needs a field name.`);
+        if (OPS[c.op]?.needsValue && !String(c.value ?? "").trim()) out.push(`Condition ${n + 1} needs a value.`);
+    });
+    if (st.type === "Decision") {
+        const cs = st.condition?.conditions || [];
+        if (cs.length === 0) out.push("Add at least one condition.");
+        cs.forEach((c, n) => {
+            if (!c.field.trim() || !/^[\w.\-]+$/.test(c.field.trim())) out.push(`Condition ${n + 1} needs a field name.`);
+            if (OPS[c.op]?.needsValue && !String(c.value ?? "").trim()) out.push(`Condition ${n + 1} needs a value.`);
+        });
+    }
     switch (st.type) {
         case "Form": {
             if (st.fields.length === 0) out.push("Add at least one field.");
@@ -215,6 +312,7 @@ export function stepIssues(st, all) {
             else if (!/^https?:\/\/[^/?#{}\s]+(?=[/?#]|$)/i.test(st.url.trim()))
                 out.push("The address must start with http:// or https:// and a fixed server name.");
             break;
+
         default:
     }
     return out;
@@ -252,8 +350,119 @@ export function allIssues(state) {
     const badReq = (state.requesters || []).filter((r) => !(isEmail(r) || isPlaceholder(r)));
     if (badReq.length) p(`Requester: not an email or {{field}}: ${badReq.join(", ")}.`);
     if (state.steps.length === 0) p("Add at least one step.");
-
+    (state.links || []).forEach((l, n) => {
+        const u = l.url.trim();
+        if (!u) p(`Link ${n + 1}: write the address, or remove the link.`);
+        else if (!/^https?:\/\/[^/?#{}\s]+(?=[/?#]|$)/i.test(u))
+            p(`Link ${n + 1}: the address must start with http:// or https:// and a fixed server name.`);
+    });
     state.steps.forEach((s) =>
         stepIssues(s, state.steps).forEach((text) => out.push({ scope: s.uid, text: `${s.name || "Step"}: ${text}` })));
     return out;
+}
+/* ---------- If / Else lanes ---------- */
+function findNode(roots, id) {
+    for (const n of roots) {
+        if (n.step.uid === id) return n;
+        const inner = findNode(n.then, id) || findNode(n.else, id);
+        if (inner) return inner;
+    }
+    return null;
+}
+const laneList = (roots, lane) => {
+    if (!lane) return roots;
+    const p = findNode(roots, lane.of);
+    return p ? p[lane.path === "else" ? "else" : "then"] : roots;
+};
+const insideNode = (n, id) =>
+    n.step.uid === id || n.then.some((c) => insideNode(c, id)) || n.else.some((c) => insideNode(c, id));
+
+function detach(list, id) {
+    const i = list.findIndex((n) => n.step.uid === id);
+    if (i >= 0) return list.splice(i, 1)[0];
+    for (const n of list) {
+        const t = detach(n.then, id) || detach(n.else, id);
+        if (t) return t;
+    }
+    return null;
+}
+
+/** Flat steps -> nested nodes {step, then[], else[]} for drawing. */
+export function buildTree(steps) {
+    const nodes = new Map(steps.map((s) => [s.uid, { step: s, then: [], else: [] }]));
+    const roots = [];
+    steps.forEach((s) => {
+        const n = nodes.get(s.uid);
+        const parent = s.branch && nodes.get(s.branch.of);
+        if (parent) parent[s.branch.path === "else" ? "else" : "then"].push(n);
+        else { if (s.branch) n.step = { ...s, branch: null }; roots.push(n); }
+    });
+    return roots;
+}
+
+/** Nested nodes -> flat steps in execution order: a decision, its "if true" steps, then its "else" steps. */
+export function flatten(roots) {
+    const out = [];
+    const walk = (n) => { out.push(n.step); n.then.forEach(walk); n.else.forEach(walk); };
+    roots.forEach(walk);
+    return out;
+}
+
+const branchOf = (lane) => (lane ? { of: lane.of, path: lane.path === "else" ? "else" : "then" } : null);
+
+export const laneSize = (steps, lane) => laneList(buildTree(steps), lane).length;
+
+export function locate(steps, id) {
+    const roots = buildTree(steps);
+    const node = findNode(roots, id);
+    if (!node) return { lane: null, index: steps.length };
+    const lane = branchOf(node.step.branch);
+    return { lane, index: laneList(roots, lane).indexOf(node) };
+}
+
+export function countInside(steps, id) {
+    const node = findNode(buildTree(steps), id);
+    let n = 0;
+    const walk = (x) => x.then.concat(x.else).forEach((k) => { n++; walk(k); });
+    if (node) walk(node);
+    return n;
+}
+
+export function insertStep(steps, step, lane, index) {
+    const roots = buildTree(steps);
+    const target = laneList(roots, lane);
+    target.splice(Math.min(index, target.length), 0, { step: { ...step, branch: branchOf(lane) }, then: [], else: [] });
+    return flatten(roots);
+}
+
+export function moveStep(steps, id, lane, index) {
+    const roots = buildTree(steps);
+    const node = findNode(roots, id);
+    if (!node) return steps;
+    if (lane && insideNode(node, lane.of)) return steps;           // a block cannot be dropped into itself
+    const before = laneList(roots, lane).indexOf(node);
+    detach(roots, id);
+    const target = laneList(roots, lane);
+    const at = before >= 0 && before < index ? index - 1 : index;   // same lane, moving down
+    node.step = { ...node.step, branch: branchOf(lane) };
+    target.splice(Math.min(at, target.length), 0, node);
+    return flatten(roots);
+}
+
+export function shiftStep(steps, id, dir) {
+    const roots = buildTree(steps);
+    const node = findNode(roots, id);
+    if (!node) return steps;
+    const list = laneList(roots, branchOf(node.step.branch));
+    const i = list.indexOf(node);
+    const j = i + dir;
+    if (j < 0 || j >= list.length) return steps;
+    [list[i], list[j]] = [list[j], list[i]];
+    return flatten(roots);
+}
+
+export function removeStep(steps, id) {
+    const roots = buildTree(steps);
+    detach(roots, id);
+    return flatten(roots);
 }

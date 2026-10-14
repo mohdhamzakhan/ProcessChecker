@@ -3,15 +3,17 @@ import { api } from "../api";
 import { DropZone, FIELD_MIME, endDrag, startDrag } from "./dnd";
 import {
     FIELD_ORDER, FIELD_TYPES, STEP_TYPES, availableFields, isEmail, isPlaceholder,
-    newField, slugKey, slugName, unique, placeholderNames
+    newField, slugKey, slugName, unique, placeholderNames, uid, OPS, condSummary, invertConditions
 } from "./model";
 import Icon from "./Icon";
 import UserPicker from "../UserPicker";
+import { buildLink } from "../links";
 
 const queryHint = (type) =>
     type === "Json" ? "JSONPath, for example $.requests[?(@.status=='new')]"
         : type === "Csv" ? "A filter, for example status = new AND amount > 1000"
-            : "A single SELECT. Write :name where a value from the request data should go.";
+            : type === "Api" ? "First line: GET /path?x=:value. Optional: a line  -> $.data  for the rows, headers (Name: value), a blank line, then a JSON body for POST."
+                : "A single SELECT. Write :name where a value from the request data should go.";
 
 // ---------------------------------------------------------------- inputs
 function PlaceholderInput({ value, onChange, fields, multiline, rows = 4, placeholder }) {
@@ -332,7 +334,63 @@ function LinkHint({ url, fields }) {
 }
 
 // ---------------------------------------------------------------- panels
+function LinksEditor({ links, onChange, fields }) {
+    const [sample, setSample] = useState('{"id": 41}');
+    let data = {};
+    let sampleErr = "";
+    try { data = JSON.parse(sample || "{}"); } catch { sampleErr = "The sample is not valid JSON."; }
 
+    const patch = (id, p) => onChange(links.map((l) => (l.uid === id ? { ...l, ...p } : l)));
+
+    return (
+        <div className="sect">
+            <h5>Document links</h5>
+            <p className="muted small">
+                Links shown on every request of this process, filled in from its data. Use <code>{"{{id}}"}</code> for a
+                value and <code>{"{{id+1}}"}</code> or <code>{"{{id-2}}"}</code> to add or subtract a whole number.
+                Pick a field with “Insert field…”, then type the +1 yourself.
+            </p>
+
+            {links.map((l) => {
+                const r = buildLink(l.url, data);
+                const hostOk = /^https?:\/\/[^/?#{}\s]+(?=[/?#]|$)/i.test(l.url.trim());
+                return (
+                    <div key={l.uid} className="linkedit">
+                        <label><span>Link text</span>
+                            <input value={l.label} placeholder="Open the report" onChange={(e) => patch(l.uid, { label: e.target.value })} /></label>
+                        <label><span>Address (URL)</span>
+                            <PlaceholderInput multiline rows={3} value={l.url} fields={fields}
+                                onChange={(v) => patch(l.uid, { url: v })}
+                                placeholder="https://meaisrv014:9012/Document/PrintReport/{{id}}?mid={{id+1}}&sid={{id+2}}&Type=M" /></label>
+                        {l.url.trim() && !hostOk && (
+                            <div className="field-err">Start with http:// or https:// and a fixed server name (no {"{{ }}"} in the server part).</div>
+                        )}
+                        {l.url.trim() && hostOk && !sampleErr && (
+                            <div className="small">
+                                {r.valid
+                                    ? <>Preview: <code className="wrap">{r.url}</code></>
+                                    : <span className="field-err">Preview needs a value for: {r.missing.join(", ")}</span>}
+                            </div>
+                        )}
+                        <button type="button" className="danger" onClick={() => onChange(links.filter((x) => x.uid !== l.uid))}>
+                            Remove link
+                        </button>
+                    </div>
+                );
+            })}
+
+            <button type="button" className="secondary" onClick={() => onChange([...links, { uid: uid(), label: "", url: "" }])}>
+                + Add a link
+            </button>
+
+            {links.length > 0 && (
+                <label><span>Try it with sample data (JSON)</span>
+                    <input value={sample} onChange={(e) => setSample(e.target.value)} /></label>
+            )}
+            {sampleErr && <div className="field-err">{sampleErr}</div>}
+        </div>
+    );
+}
 function ApplyRequesters({ processKey, disabled }) {
     const [msg, setMsg] = useState("");
     const [busy, setBusy] = useState(false);
@@ -355,6 +413,7 @@ function ApplyRequesters({ processKey, disabled }) {
 }
 export function ProcessProps({ state, change, connections, dirty }) {
     const t = state.trigger;
+    const fields = availableFields(state, state.steps.length);
     const setT = (patch) => change((s) => ({ ...s, trigger: { ...s.trigger, ...patch } }));
     const conn = connections.find((c) => c.name === t.connection);
 
@@ -446,10 +505,86 @@ export function ProcessProps({ state, change, connections, dirty }) {
                         <ApplyRequesters processKey={state.key} disabled={dirty} />}
                 </div>
             </div>
+            <LinksEditor links={state.links || []} fields={fields}
+                onChange={(links) => change((s) => ({ ...s, links }))} />
         </div>
     );
 }
 
+function ConditionsEditor({ title, value, fields, steps = [], index = 0, allowOpposite, onChange, help,
+    emptyText = "No condition: this step always runs." }) {
+    const rc = value || { match: "all", conditions: [] };
+    const set = (p) => onChange({ ...rc, ...p });
+    const known = new Set(fields.map((f) => f.name.toLowerCase()));
+    const earlier = allowOpposite ? steps.slice(0, index).filter((s) => s.runIf?.conditions?.length) : [];
+    const patch = (id, p) => set({ conditions: rc.conditions.map((c) => (c.uid === id ? { ...c, ...p } : c)) });
+
+    return (
+        <div className="sect">
+            <h5>{title}</h5>
+            <datalist id="fl-cond">
+                {fields.map((f) => <option key={f.name} value={f.name}>{f.label} ({f.source})</option>)}
+            </datalist>
+
+            {rc.conditions.length === 0 && <p className="muted small">{emptyText}</p>}
+
+            {rc.conditions.length > 1 && (
+                <select value={rc.match} onChange={(e) => set({ match: e.target.value })}>
+                    <option value="all">All of these are true</option>
+                    <option value="any">Any of these is true</option>
+                </select>
+            )}
+
+            {rc.conditions.map((c) => {
+                const unknown = c.field.trim() && !known.has(c.field.trim().toLowerCase()) && !c.field.includes(".");
+                return (
+                    <div key={c.uid} className="cond">
+                        <input list="fl-cond" value={c.field} placeholder="field, e.g. amount"
+                            onChange={(e) => patch(c.uid, { field: e.target.value })} />
+                        <select value={c.op} onChange={(e) => patch(c.uid, { op: e.target.value })}>
+                            {Object.entries(OPS).map(([k, o]) => <option key={k} value={k}>{o.label}</option>)}
+                        </select>
+                        {OPS[c.op]?.needsValue && (
+                            <input value={c.value} placeholder="value, or a {{field}}"
+                                onChange={(e) => patch(c.uid, { value: e.target.value })} />
+                        )}
+                        <button type="button" className="icon danger" title="Remove"
+                            onClick={() => set({ conditions: rc.conditions.filter((x) => x.uid !== c.uid) })}>
+                            <Icon name="x" size={14} />
+                        </button>
+                        {unknown && (
+                            <div className="field-err" style={{ flexBasis: "100%" }}>
+                                Nothing collected before this step is called “{c.field}”. Ignore this if it comes from the starting data.
+                            </div>
+                        )}
+                    </div>
+                );
+            })}
+
+            <div className="actions">
+                <button type="button" className="secondary"
+                    onClick={() => set({ conditions: [...rc.conditions, { uid: uid(), field: "", op: "eq", value: "" }] })}>
+                    + Add a condition
+                </button>
+                {rc.conditions.length > 0 && (
+                    <button type="button" className="secondary" onClick={() => set({ conditions: [] })}>Remove all</button>
+                )}
+            </div>
+
+            {earlier.length > 0 && (
+                <select value="" onChange={(e) => {
+                    const s = steps.find((x) => x.uid === e.target.value);
+                    if (s) onChange(invertConditions(s.runIf));
+                }}>
+                    <option value="">Use the opposite (else) of an earlier step…</option>
+                    {earlier.map((s) => <option key={s.uid} value={s.uid}>{s.name}: {condSummary(s.runIf)}</option>)}
+                </select>
+            )}
+
+            <p className="muted small">{help}</p>
+        </div>
+    );
+}
 export function StepProps({ step, index, state, change, connections }) {
     const patch = (p) => change((s) => ({ ...s, steps: s.steps.map((x) => (x.uid === step.uid ? { ...x, ...p } : x)) }));
     const fields = availableFields(state, index);
@@ -548,7 +683,29 @@ export function StepProps({ step, index, state, change, connections }) {
                         )}
                     </>
                 )}
+                {step.type === "Decision" && (
+                    <ConditionsEditor title="If…" value={step.condition} fields={fields}
+                        emptyText="No condition yet."
+                        onChange={(condition) => patch({ condition })}
+                        help="When this is true, the steps in the “If true” lane run. Otherwise the steps in the “Else” lane run. Either lane can stay empty, and the steps after the block run on both paths." />
+                )}
 
+                {step.type !== "Decision" && step.branch && (
+                    <div className="hintbar">
+                        <Icon name="branch" size={16} />
+                        <span>
+                            This step is in the <b>{step.branch.path === "else" ? "Else" : "If true"}</b> lane of
+                            “{state.steps.find((x) => x.uid === step.branch.of)?.name}”, so it runs only on that path.
+                        </span>
+                    </div>
+                )}
+
+                {step.type !== "Decision" && !step.branch && (
+                    <ConditionsEditor title="Run this step only if…" value={step.runIf} fields={fields}
+                        steps={state.steps} index={index} allowOpposite
+                        onChange={(runIf) => patch({ runIf })}
+                        help="If the answer is no, this step is skipped and the request moves on. For a real if / else with several steps, use an If / Else step instead." />
+                )}
                 <details className="sect">
                     <summary>Advanced</summary>
                     <label><span>Step key</span>

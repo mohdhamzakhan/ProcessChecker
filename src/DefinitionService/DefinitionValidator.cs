@@ -16,7 +16,45 @@ public class DefinitionValidator
 
     private static readonly Regex LinkUrlStart =
     new(@"^https?://[^/?#{}\s]+(?=[/?#]|$)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly string[] CondOps =
+    { "eq", "ne", "gt", "gte", "lt", "lte", "contains", "notcontains", "in", "notin", "empty", "notempty" };
+    private static readonly Regex CondField = new(@"^[\w.\-]+$", RegexOptions.Compiled);
 
+    private static void CheckConditions(RunIfDefinition? r, string p, List<string> errors)
+    {
+        if (r is null || r.Conditions.Count == 0) return;
+
+        if (r.Match is not ("all" or "any")) errors.Add($"{p}: the condition match must be 'all' or 'any'.");
+        if (r.Conditions.Count > 10) errors.Add($"{p}: at most 10 conditions per step.");
+
+        foreach (var c in r.Conditions)
+        {
+            if (string.IsNullOrWhiteSpace(c.Field) || !CondField.IsMatch(c.Field.Trim()))
+                errors.Add($"{p}: a condition needs a valid field name.");
+            if (!CondOps.Contains(c.Op))
+                errors.Add($"{p}: unknown condition operator '{c.Op}'.");
+            else if (c.Op is not ("empty" or "notempty") && string.IsNullOrWhiteSpace(c.Value))
+                errors.Add($"{p}: the condition on '{c.Field}' needs a value.");
+            if ((c.Value?.Length ?? 0) > 500) errors.Add($"{p}: a condition value is too long.");
+        }
+    }
+
+    private static void CheckRunIf(StepDefinition s, string p, List<string> errors) =>
+        CheckConditions(s.RunIf, p, errors);
+
+    private static void CheckBranch(StepDefinition s, string p, List<StepDefinition> all, List<string> errors)
+    {
+        var b = s.Branch;
+        if (b is null) return;
+        if (b.Path is not ("then" or "else")) errors.Add($"{p}: the lane must be 'then' or 'else'.");
+
+        var at = all.IndexOf(s);
+        var parent = all.FindIndex(x => x.Key == b.Of);
+        if (parent < 0 || all[parent].Type != StepTypes.Decision)
+            errors.Add($"{p}: it belongs to an If / Else step that does not exist.");
+        else if (parent >= at)
+            errors.Add($"{p}: its If / Else step must come before it.");
+    }
     private static void CheckAssignees(StepDefinition s, string p, List<string> errors)
     {
         foreach (var a in s.Assignees)
@@ -90,7 +128,8 @@ public class DefinitionValidator
 
             // inside "case StepTypes.DataFetch:", after the existing checks:
             if (CheckSchema(s.Schema, true) is { } se) errors.Add($"{p}: {se}");
-
+            CheckRunIf(s, p, errors);
+            CheckBranch(s, p, d.Steps, errors);
             switch (s.Type)
             {
                 case StepTypes.Approval:
@@ -131,6 +170,12 @@ public class DefinitionValidator
                         errors.Add($"{p}: Url is required.");
                     else if (!UrlStart.IsMatch(s.Url.Trim()))
                         errors.Add($"{p}: Url must start with http:// or https:// and a fixed server name (no placeholder in the server part).");
+                    break;
+
+                case StepTypes.Decision:
+                    if (s.Condition is null || s.Condition.Conditions.Count == 0)
+                        errors.Add($"{p}: an If / Else step needs at least one condition.");
+                    else CheckConditions(s.Condition, p, errors);
                     break;
             }
         }
