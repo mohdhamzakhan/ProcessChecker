@@ -57,13 +57,34 @@ function Lane({ nodes, lane, ctx }) {
     const key = lane ? `${lane.of}:${lane.path}` : "root";
     return (
         <>
-            {nodes.map((n, i) => (
-                <Fragment key={n.step.uid}>
-                    <Connector id={`${key}:${i}`} lane={lane} index={i} ctx={ctx} />
-                    <NodeView n={n} first={i === 0} last={i === nodes.length - 1} ctx={ctx} />
-                </Fragment>
-            ))}
-            <Connector id={`${key}:${nodes.length}`} lane={lane} index={nodes.length} ctx={ctx} />
+            {nodes.map((n, i) => {
+                const prevNode = i > 0 ? nodes[i - 1] : null;
+                const nextNode = i < nodes.length - 1 ? nodes[i + 1] : null;
+                const isAfterEnd = prevNode && prevNode.step.type === "End";
+
+                // Prevent moving up if it's the first item OR if it's an End step
+                const cannotMoveUp = i === 0 || n.step.type === "End";
+
+                // Prevent moving down if it's the last item OR if the next step is an End step
+                const cannotMoveDown = i === nodes.length - 1 || (nextNode && nextNode.step.type === "End");
+
+                return (
+                    <Fragment key={n.step.uid}>
+                        {!isAfterEnd && <Connector id={`${key}:${i}`} lane={lane} index={i} ctx={ctx} />}
+                        <NodeView
+                            n={n}
+                            first={cannotMoveUp}
+                            last={cannotMoveDown}
+                            ctx={ctx}
+                        />
+                    </Fragment>
+                );
+            })}
+
+            {(!nodes.length || nodes[nodes.length - 1].step.type !== "End") && (
+                <Connector id={`${key}:${nodes.length}`} lane={lane} index={nodes.length} ctx={ctx} />
+            )}
+
             {lane && nodes.length === 0 && (
                 <div className="laneempty">
                     <small className="muted">No steps on this path</small>
