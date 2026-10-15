@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { downloadFile } from "./api";
 import Icon from "./designer/Icon";
 import Viewer from "./Viewer";
+import { useDialogs } from "./Dialogs.jsx"
 
 // the server sends UTC times without a "Z", so add it before the browser reads them
 const toDate = (d) => {
@@ -148,7 +149,7 @@ export function DynamicForm({ fields, allowUpload, onSubmit, busy, submitLabel =
 
 /** Uploaded files, each with View and Download */
 export function FileLinks({ files }) {
-    import { useDialogs } from "./Dialogs"
+
     const [view, setView] = useState(null);
     const { alert } = useDialogs();
     if (!files?.length) return null;

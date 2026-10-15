@@ -12,6 +12,7 @@ public class EngineDb : DbContext
     public DbSet<TriggerSeen> TriggerSeenRows => Set<TriggerSeen>();
     public DbSet<Participant> Participants => Set<Participant>();
     public DbSet<DashboardEntity> Dashboards => Set<DashboardEntity>();
+    public DbSet<AwayEntity> Away { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder b)
     {

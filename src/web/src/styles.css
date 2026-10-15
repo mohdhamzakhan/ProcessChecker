@@ -205,38 +205,7 @@ code {
         color: var(--muted);
     }
 
-@media (max-width: 860px) {
-    .app {
-        grid-template-columns: 1fr;
-    }
 
-    .sidebar {
-        position: static;
-        height: auto;
-        flex-direction: row;
-        flex-wrap: wrap;
-        align-items: center;
-        padding: 10px;
-    }
-
-    .brand {
-        padding: 0 8px 0 4px;
-    }
-
-    .nav-label, .sidebar .grow {
-        display: none;
-    }
-
-    .userbox {
-        border: 0;
-        padding: 0;
-        margin-left: auto;
-    }
-
-    .content {
-        padding: 18px 14px 40px;
-    }
-}
 
 /* ---------- tables ---------- */
 table {
@@ -693,6 +662,7 @@ details > summary {
     .login button {
         padding: 10px;
     }
+
 .linkrow {
     display: flex;
     align-items: center;
@@ -1686,6 +1656,7 @@ a.btn {
         letter-spacing: .06em;
         color: var(--muted);
     }
+
 .linkrow {
     display: flex;
     align-items: center;
@@ -1727,6 +1698,7 @@ code.wrap {
     word-break: break-all;
     white-space: normal;
 }
+
 .cond {
     display: flex;
     flex-wrap: wrap;
@@ -2163,8 +2135,15 @@ button.dangerfill {
 }
 
 /* ---- mobile menu ---- */
-.mbar, .backdrop, .sclose {
+.mbar, .backdrop {
     display: none;
+}
+
+.sidebar .brand .sclose {
+    display: none;
+    position: absolute;
+    right: 0;
+    color: #cbd5e1;
 }
 
 .sidebar .brand {
@@ -2230,6 +2209,9 @@ button.dangerfill {
             visibility: visible;
             transition-delay: 0s;
             box-shadow: 0 0 40px rgba(0,0,0,.45);
+        }
+        .sidebar .brand .sclose {
+            display: grid;
         }
 
     .sclose {
@@ -2314,3 +2296,174 @@ button.dangerfill {
         padding: 10px;
     }
 }
+/* Page Layout */
+.page-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 24px;
+}
+
+    .page-head h2 {
+        margin: 0 0 4px 0;
+        font-size: 1.5rem;
+    }
+
+    .page-head p {
+        margin: 0;
+        color: #64748b;
+    }
+
+.actions {
+    display: flex;
+    gap: 12px;
+}
+
+.filterbar {
+    margin-bottom: 24px;
+}
+
+.search {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    padding: 8px 12px;
+    border-radius: 6px;
+    width: max-content;
+}
+
+    .search input {
+        border: none;
+        outline: none;
+        background: transparent;
+    }
+
+/* Grid & Cards */
+.pgrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 20px;
+}
+
+.pcard {
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+}
+
+    .pcard.off {
+        opacity: 0.7;
+        background: #f8fafc;
+    }
+
+/* Card Header */
+.phd {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.pbadge {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    background: var(--c, #e0e7ff);
+    color: #fff;
+    border-radius: 8px;
+}
+
+.ptitle {
+    display: flex;
+    flex-direction: column;
+}
+
+    .ptitle b {
+        font-size: 1.1rem;
+        color: #0f172a;
+    }
+
+    .ptitle small {
+        color: #64748b;
+        font-size: 0.8rem;
+    }
+
+.badge {
+    margin-left: auto;
+    font-size: 0.75rem;
+    padding: 4px 8px;
+    border-radius: 12px;
+    background: #f1f5f9;
+    color: #475569;
+}
+
+/* Card Body & Steps */
+.pdesc {
+    margin: 0;
+    color: #475569;
+    font-size: 0.9rem;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.pflow {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 12px;
+    background: #f8fafc;
+    border-radius: 6px;
+}
+
+.pstep {
+    color: var(--c, #64748b);
+    display: flex;
+    align-items: center;
+}
+
+/* Card Footer */
+.pfoot {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: auto;
+    padding-top: 16px;
+    border-top: 1px solid #e2e8f0;
+}
+
+    .pfoot button {
+        padding: 6px 12px;
+        border-radius: 6px;
+        border: none;
+        cursor: pointer;
+        font-weight: 500;
+    }
+
+        .pfoot button:not(.secondary) {
+            background: #4f46e5;
+            color: white;
+        }
+
+        .pfoot button.secondary {
+            background: #f1f5f9;
+            color: #334155;
+        }
+
+        .pfoot button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .pfoot button:first-child {
+            margin-right: auto; /* Pushes the start button to the left, admin actions to the right */
+        }
