@@ -12,12 +12,13 @@ public class WorkflowEngine
     private readonly DefinitionClient _defs;
     private readonly Dictionary<string, IStepHandler> _handlers;
     private readonly TaskMailer _tasks;
+    private readonly EventMailer _events;
     private readonly ILogger<WorkflowEngine> _log;
 
-    public WorkflowEngine(EngineDb db, DefinitionClient defs,
-        IEnumerable<IStepHandler> handlers, TaskMailer tasks, ILogger<WorkflowEngine> log)
+    public WorkflowEngine(EngineDb db, DefinitionClient defs, IEnumerable<IStepHandler> handlers,
+        TaskMailer tasks, EventMailer events, ILogger<WorkflowEngine> log)
     {
-        _db = db; _defs = defs; _tasks = tasks; _log = log;
+        _db = db; _defs = defs; _tasks = tasks; _events = events; _log = log;
         _handlers = handlers.ToDictionary(h => h.Type);
     }
 
@@ -73,6 +74,7 @@ public class WorkflowEngine
 
         await AdvanceAsync(inst, def, data, ct);
         await _tasks.NotifyObserversAsync(inst, observers, startedBy, ct);
+        await AfterAsync(inst, ct);
         return inst;
     }
 
@@ -91,9 +93,13 @@ public class WorkflowEngine
         if (step.StepType is StepTypes.Form or StepTypes.Upload)
         {
             var assigned = TaskMailer.Split(step.Assignees);
-            if (assigned.Count > 0 && !action.IsAdmin &&
-                !assigned.Contains((action.By ?? "").Trim().ToLowerInvariant()))
-                throw new EngineException(403, "This task is assigned to other people.");
+            if (assigned.Count > 0 && !action.IsAdmin)
+            {
+                // the caller's email, user name and groups
+                var who = action.Who ?? new[] { (action.By ?? "").Trim().ToLowerInvariant() };
+                if (!assigned.Any(a => who.Contains(a)))
+                    throw new EngineException(403, "This task is assigned to other people.");
+            }
         }
 
         var def = ReadDefinition(inst);
@@ -103,6 +109,10 @@ public class WorkflowEngine
         var result = await Handler(sd.Type).ActAsync(NewContext(inst, step, sd, data), action, ct);
         Apply(inst, step, result);
         await AdvanceAsync(inst, def, data, ct);
+
+        if (action.Files is { Count: > 0 })
+            await _events.FileUploadedAsync(inst, step.StepName, action.Files, action.By, ct);
+        await AfterAsync(inst, ct);
     }
 
     public async Task RetryAsync(Guid id, string stepKey, CancellationToken ct)
@@ -118,6 +128,7 @@ public class WorkflowEngine
         inst.Status = InstanceStatus.Running;
 
         await AdvanceAsync(inst, ReadDefinition(inst), DataBag.FromJson(inst.DataJson), ct);
+        await AfterAsync(inst, ct);
     }
 
     public async Task CancelAsync(Guid id, CancellationToken ct)
@@ -128,7 +139,9 @@ public class WorkflowEngine
 
         inst.Status = InstanceStatus.Cancelled;
         inst.CompletedAt = DateTime.UtcNow;
+        SkipOpen(inst, null, "the request was cancelled");
         await SaveAsync(inst, ct);
+        await AfterAsync(inst, ct);
     }
 
     public async Task ReassignAsync(Guid id, string stepKey, IEnumerable<string> raw, string? by, CancellationToken ct)
@@ -149,12 +162,17 @@ public class WorkflowEngine
         switch (step.StepType)
         {
             case StepTypes.Approval:
-                // while the step waits nobody has decided yet (one approval completes it, one rejection ends it)
-                foreach (var old in step.Approvals.Where(a => a.Decision == null).ToList())
-                    _db.Approvals.Remove(old);
-                foreach (var a in list)
-                    step.Approvals.Add(new StepApproval { StepInstanceId = step.Id, Approver = a });
-                break;
+                {
+                    var fresh = list.Where(x => !step.Approvals.Any(p => p.Approver == x && p.Decision != null)).ToList();
+                    if (fresh.Count == 0)
+                        throw new EngineException(400, "Everyone you listed has already decided on this step.");
+
+                    foreach (var old in step.Approvals.Where(a => a.Decision == null).ToList())
+                        _db.Approvals.Remove(old);
+                    foreach (var a in fresh)
+                        step.Approvals.Add(new StepApproval { StepInstanceId = step.Id, Approver = a });
+                    break;
+                }
 
             case StepTypes.Form:
             case StepTypes.Upload:
@@ -172,21 +190,15 @@ public class WorkflowEngine
     // ---------------------------------------------------------------- core loop
     private async Task AdvanceAsync(ProcessInstance inst, ProcessDefinitionDto def, DataBag data, CancellationToken ct)
     {
-        while (inst.Status == InstanceStatus.Running)
+        var graph = new Graph(def);
+
+        for (var guard = 0; inst.Status == InstanceStatus.Running && guard < 2000; guard++)
         {
-            var step = inst.Steps.OrderBy(s => s.OrderNo)
-               .FirstOrDefault(s => s.Status != StepState.Completed && s.Status != StepState.Skipped);
+            var sd = graph.NextReady(inst);
+            if (sd == null) break;
+            var step = inst.Steps.First(s => s.StepKey == sd.Key);
 
-            if (step == null)
-            {
-                inst.Status = InstanceStatus.Completed;
-                inst.CompletedAt = DateTime.UtcNow;
-                break;
-            }
-            if (step.Status != StepState.Pending) break;   // waiting for a person, or failed/rejected
-
-            var sd = def.Steps.First(s => s.Key == step.StepKey);
-            var why = BranchBlocked(sd, def, data);
+            var why = BranchBlocked(sd, def, data, inst);
             if (why == null)
             {
                 var check = Conditions.Evaluate(sd.RunIf, data);
@@ -199,14 +211,12 @@ public class WorkflowEngine
                 step.OutputJson = JsonSerializer.Serialize(new { skipped = true, reason = why }, J);
                 continue;
             }
+
             step.Status = StepState.InProgress;
             step.StartedAt = DateTime.UtcNow;
 
             StepResult result;
-            try
-            {
-                result = await Handler(sd.Type).StartAsync(NewContext(inst, step, sd, data), ct);
-            }
+            try { result = await Handler(sd.Type).StartAsync(NewContext(inst, step, sd, data), ct); }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _log.LogError(ex, "Step {Step} of {Id} crashed", step.StepKey, inst.Id);
@@ -214,31 +224,56 @@ public class WorkflowEngine
             }
 
             Apply(inst, step, result);
-            if (result.Outcome != StepOutcome.Completed) break;
+
+            if (result.Outcome == StepOutcome.Waiting)
+            {
+                // deadline and reminders start counting now; other paths of a Parallel block may start too
+                if (sd.DueHours is > 0) step.DueAt = step.StartedAt!.Value.AddHours(sd.DueHours.Value);
+                step.RemindHours = sd.RemindEveryHours is > 0 ? sd.RemindEveryHours : null;
+                continue;
+            }
+            if (result.Outcome != StepOutcome.Completed) break;     // failed, rejected or ended
+        }
+
+        if (inst.Status == InstanceStatus.Running && inst.Steps.All(s => Graph.Terminal(s.Status)))
+        {
+            inst.Status = InstanceStatus.Completed;
+            inst.CompletedAt = DateTime.UtcNow;
         }
 
         inst.DataJson = data.ToJson();
         inst.Requester = Requesters.Resolve(def, data) ?? inst.Requester;
         await SaveAsync(inst, ct);
     }
-    /// null = the step may run. Otherwise the reason it is skipped: a lane that was not taken.
-    private static string? BranchBlocked(StepDefinition sd, ProcessDefinitionDto def, DataBag data)
+
+    /// null = the step may run. Otherwise why it is skipped: a path that was not taken, or a skipped block.
+    private static string? BranchBlocked(StepDefinition sd, ProcessDefinitionDto def, DataBag data, ProcessInstance inst)
     {
         var cur = sd;
         for (var guard = 0; cur.Branch != null && guard < 20; guard++)
         {
-            var dec = def.Steps.FirstOrDefault(s => s.Key == cur.Branch.Of);
-            if (dec == null) return $"its If / Else step '{cur.Branch.Of}' no longer exists";
+            var owner = def.Steps.FirstOrDefault(s => s.Key == cur.Branch.Of);
+            if (owner == null) return $"its block '{cur.Branch.Of}' no longer exists";
 
-            var result = data.GetString($"{dec.Key}.result");
-            if (string.IsNullOrEmpty(result)) return $"the decision '{dec.Name}' was not reached";
-            if (!string.Equals(result, cur.Branch.Path, StringComparison.OrdinalIgnoreCase))
-                return $"the decision '{dec.Name}' went the {(result == "then" ? "If true" : "Else")} way";
+            if (inst.Steps.FirstOrDefault(s => s.StepKey == owner.Key)?.Status == StepState.Skipped)
+                return $"the block '{owner.Name}' was skipped";
 
-            cur = dec;     // a nested decision is only reached through its own lane
+            if (owner.Type == StepTypes.Decision)
+            {
+                var result = data.GetString($"{owner.Key}.result");
+                if (string.IsNullOrEmpty(result)) return $"the decision '{owner.Name}' was not reached";
+                if (!string.Equals(result, cur.Branch.Path, StringComparison.OrdinalIgnoreCase))
+                    return $"the decision '{owner.Name}' went the {(result == "then" ? "If true" : "Else")} way";
+            }
+            cur = owner;
         }
         return null;
     }
+
+    private Task AfterAsync(ProcessInstance inst, CancellationToken ct) =>
+        inst.Status is InstanceStatus.Completed or InstanceStatus.Rejected or InstanceStatus.Cancelled
+            ? _events.EndedAsync(inst, ct)
+            : Task.CompletedTask;
     /// Works out the requester again for every request of a process, using the latest saved settings.
     public async Task<int> ResolveRequestersAsync(ProcessDefinitionDto def, string processKey, CancellationToken ct)
     {
@@ -275,6 +310,7 @@ public class WorkflowEngine
                 step.CompletedAt = now;
                 inst.Status = InstanceStatus.Rejected;
                 inst.CompletedAt = now;
+                SkipOpen(inst, step, $"the request was rejected at \"{step.StepName}\"");
                 break;
 
             case StepOutcome.Failed:
@@ -292,12 +328,13 @@ public class WorkflowEngine
                         ? r.EndStatus : InstanceStatus.Completed;
                     inst.CompletedAt = now;
 
-                    // everything still waiting will never run
                     var why = $"the request ended at \"{step.StepName}\"";
-                    foreach (var rest in inst.Steps.Where(x => x.Status == StepState.Pending))
+                    foreach (var rest in inst.Steps.Where(x => x != step
+                                 && (x.Status == StepState.Pending || x.Status == StepState.InProgress)))
                     {
                         rest.Status = StepState.Skipped;
-                        rest.StartedAt = rest.CompletedAt = now;
+                        rest.StartedAt ??= now;
+                        rest.CompletedAt = now;
                         rest.OutputJson = JsonSerializer.Serialize(new { skipped = true, reason = why }, J);
                     }
                     break;
@@ -361,5 +398,17 @@ public class WorkflowEngine
 
         await SaveAsync(inst, ct);
         await _tasks.NotifyObserversAsync(inst, added, by, ct);
+    }
+    private static void SkipOpen(ProcessInstance inst, StepInstance? except, string why)
+    {
+        var now = DateTime.UtcNow;
+        foreach (var rest in inst.Steps.Where(x => x != except
+                     && (x.Status == StepState.Pending || x.Status == StepState.InProgress)))
+        {
+            rest.Status = StepState.Skipped;
+            rest.StartedAt ??= now;
+            rest.CompletedAt = now;
+            rest.OutputJson = JsonSerializer.Serialize(new { skipped = true, reason = why }, J);
+        }
     }
 }

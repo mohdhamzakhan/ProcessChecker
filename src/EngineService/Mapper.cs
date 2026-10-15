@@ -10,12 +10,14 @@ public static class Mapper
     public static InstanceSummary ToSummary(ProcessInstance i)
     {
         var steps = i.Steps.OrderBy(s => s.OrderNo).ToList();
-        var current = steps.FirstOrDefault(s => s.Status is StepState.InProgress or StepState.Failed);
+        var live = steps.Where(s => s.Status is StepState.InProgress or StepState.Failed).ToList();
+        var name = live.Count == 0 ? null : live.Count == 1 ? live[0].StepName : $"{live[0].StepName} (+{live.Count - 1})";
+        var due = live.Where(s => s.Status == StepState.InProgress).Select(s => s.DueAt).Min();
 
         return new InstanceSummary(
             i.Id, i.ProcessKey, i.ProcessName, i.ProcessVersion, i.Title, i.Status,
             i.StartedBy, i.CreatedAt, i.CompletedAt,
-            steps.Count, steps.Count(s => s.Status is StepState.Completed or StepState.Skipped), current?.StepName);
+            steps.Count, steps.Count(s => s.Status is StepState.Completed or StepState.Skipped), name, due);
     }
 
     public static InstanceDetail ToDetail(ProcessInstance i)
@@ -36,8 +38,9 @@ public static class Mapper
                 isForm ? sd?.AllowUpload : null,
                 s.Approvals.Count == 0
                     ? null
-                    : s.Approvals.Select(a => new ApprovalView(a.Approver, a.Decision, a.Note, a.DecidedAt)).ToList(),
-                assigned.Count == 0 ? null : assigned);
+                    : s.Approvals.Select(a => new ApprovalView(a.Approver, a.Decision, a.Note, a.DecidedAt, a.DecidedBy)).ToList(),
+                assigned.Count == 0 ? null : assigned,
+                s.DueAt);
         }).ToList();
 
         var data = DataBag.FromJson(i.DataJson).All.ToDictionary(k => k.Key, k => k.Value);

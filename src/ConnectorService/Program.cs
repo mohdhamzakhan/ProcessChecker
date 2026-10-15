@@ -9,9 +9,9 @@ using Oracle.ManagedDataAccess.Client;
 using ProcessChecker.Contracts;
 
 var builder = WebApplication.CreateBuilder(args);
-
-builder.Services.AddDbContext<ConnectorDb>(o =>
-    o.UseOracle(builder.Configuration.GetConnectionString("Default")));
+builder.Configuration.AddDockerSecrets();
+builder.Services.AddDbContext<ConnectorDb>(o => o.UseOracle(builder.Configuration.GetConnectionString("Default"),
+    x => x.MigrationsHistoryTable(DbMigrator.HistoryTable("CONNECTOR"), DbObjects.Schema)));
 
 builder.Services.AddDataProtection()
     .SetApplicationName("ProcessChecker")
@@ -36,6 +36,8 @@ builder.Services.AddSwaggerGen();
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
 
 var app = builder.Build();
+SecretCheck.Run(app.Configuration, app.Environment, app.Logger,
+    ("Gateway:Key", 24), ("ConnectionStrings:Default", 10));
 app.UseInternalKey();
 app.UseCors();
 app.UseSwagger();
@@ -46,22 +48,14 @@ app.UseSwaggerUI();
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<ConnectorDb>();
-    await db.Database.OpenConnectionAsync();
-    try
+    await DbMigrator.RunAsync(db, "PC_CONNECTIONS", async conn =>
     {
-        var conn = db.Database.GetDbConnection();
-        if (!await DbObjects.TableExistsAsync(conn, "PC_CONNECTIONS"))
-            db.Database.GetService<IRelationalDatabaseCreator>().CreateTables();
-        else
-        {
-            var s = DbObjects.Schema;
-            if (!await DbObjects.ColumnExistsAsync(conn, "PC_CONNECTIONS", "DEFAULT_SCHEMA"))
-                await db.Database.ExecuteSqlRawAsync($"ALTER TABLE {s}.PC_CONNECTIONS ADD (DEFAULT_SCHEMA NVARCHAR2(128))");
-            if (!await DbObjects.ColumnExistsAsync(conn, "PC_CONNECTIONS", "ALLOWED_SCHEMAS"))
-                await db.Database.ExecuteSqlRawAsync($"ALTER TABLE {s}.PC_CONNECTIONS ADD (ALLOWED_SCHEMAS NVARCHAR2(2000))");
-        }
-    }
-    finally { await db.Database.CloseConnectionAsync(); }
+        var s = DbObjects.Schema;
+        if (!await DbObjects.ColumnExistsAsync(conn, "PC_CONNECTIONS", "DEFAULT_SCHEMA"))
+            await db.Database.ExecuteSqlRawAsync($"ALTER TABLE {s}.PC_CONNECTIONS ADD (DEFAULT_SCHEMA NVARCHAR2(128))");
+        if (!await DbObjects.ColumnExistsAsync(conn, "PC_CONNECTIONS", "ALLOWED_SCHEMAS"))
+            await db.Database.ExecuteSqlRawAsync($"ALTER TABLE {s}.PC_CONNECTIONS ADD (ALLOWED_SCHEMAS NVARCHAR2(2000))");
+    }, app.Logger);
 }
 
 static Dictionary<string, object?>? ToParams(Dictionary<string, JsonElement>? p) =>

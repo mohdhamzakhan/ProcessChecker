@@ -6,9 +6,11 @@ using Oracle.ManagedDataAccess.Client;
 using ProcessChecker.Contracts;
 
 var builder = WebApplication.CreateBuilder(args);
-
-builder.Services.AddDbContext<NotifyDb>(o =>
-    o.UseOracle(builder.Configuration.GetConnectionString("Default")));
+builder.Configuration.AddDockerSecrets();
+builder.WebHost.ConfigureKestrel(k => k.Limits.MaxRequestBodySize = 60L * 1024 * 1024);
+builder.Services.AddHostedService<RetentionWorker>();
+builder.Services.AddDbContext<NotifyDb>(o => o.UseOracle(builder.Configuration.GetConnectionString("Default"),
+    x => x.MigrationsHistoryTable(DbMigrator.HistoryTable("NOTIFY"), DbObjects.Schema)));
 builder.Services.AddSingleton(builder.Configuration.GetSection("Smtp").Get<SmtpOptions>() ?? new SmtpOptions());
 builder.Services.AddScoped<EmailService>();
 
@@ -17,6 +19,8 @@ builder.Services.AddSwaggerGen();
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
 
 var app = builder.Build();
+SecretCheck.Run(app.Configuration, app.Environment, app.Logger,
+    ("Gateway:Key", 24), ("ConnectionStrings:Default", 10));
 app.UseInternalKey();
 app.UseCors();
 app.UseSwagger();
@@ -36,14 +40,11 @@ app.Use(async (ctx, next) =>
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<NotifyDb>();
-    await db.Database.OpenConnectionAsync();
-    try
+    await DbMigrator.RunAsync(db, "PC_NOTIFICATIONS", async conn =>
     {
-        if (!await DbObjects.TableExistsAsync(db.Database.GetDbConnection(), "PC_NOTIFICATIONS"))
-            db.Database.GetService<IRelationalDatabaseCreator>().CreateTables();
-    }
-    catch (OracleException ex) when (ex.Number == 955) { /* table already exists */ }
-    finally { await db.Database.CloseConnectionAsync(); }
+        if (!await DbObjects.ColumnExistsAsync(conn, "PC_NOTIFICATIONS", "ATTACHMENTS"))
+            await db.Database.ExecuteSqlRawAsync($"ALTER TABLE {DbObjects.Schema}.PC_NOTIFICATIONS ADD (ATTACHMENTS NVARCHAR2(1000))");
+    }, app.Logger);
 
     var o = scope.ServiceProvider.GetRequiredService<SmtpOptions>();
 
@@ -91,6 +92,7 @@ app.MapGet("/api/notifications", async (
             x.Error,
             x.Attempts,
             x.CreatedAt,
+            x.AttachmentNames,
             x.SentAt
         })
         .ToListAsync(ct);
@@ -105,20 +107,19 @@ app.MapGet("/api/notifications/{id:guid}", async (Guid id, NotifyDb db, Cancella
 });
 
 // Try a failed email again
-app.MapPost("/api/notifications/{id:guid}/resend", async (
-    Guid id, NotifyDb db, EmailService svc, CancellationToken ct) =>
+app.MapPost("/api/notifications/{id:guid}/resend", async (Guid id, NotifyDb db, EmailService svc, CancellationToken ct) =>
 {
     var n = await db.Notifications.FirstOrDefaultAsync(x => x.Id == id, ct);
     if (n is null) return Results.NotFound();
-    if (n.Status != NotifyStatus.Failed)
-        return Results.Conflict(new { error = "Only failed emails can be resent." });
+    if (n.Status != NotifyStatus.Failed) return Results.Conflict(new { error = "Only failed emails can be resent." });
+    if (n.AttachmentNames != null)
+        return Results.Conflict(new { error = "This email had attachments, which are not stored. Retry the step in the request instead." });
 
-    await svc.DeliverAsync(n, ct);
+    await svc.DeliverAsync(n, null, ct);
     return n.Status == NotifyStatus.Failed
         ? Results.Json(new { id = n.Id, status = n.Status, error = n.Error }, statusCode: 502)
         : Results.Ok(new { id = n.Id, status = n.Status });
 });
-
 // Check your SMTP settings
 app.MapPost("/api/notifications/test", async (TestRequest req, EmailService svc, CancellationToken ct) =>
 {
@@ -131,6 +132,29 @@ app.MapPost("/api/notifications/test", async (TestRequest req, EmailService svc,
     return log.Status == NotifyStatus.Failed
         ? Results.Json(new { id = log.Id, status = log.Status, error = log.Error }, statusCode: 502)
         : Results.Ok(new { id = log.Id, status = log.Status });
+});
+app.MapGet("/api/notifications/stats", async (NotifyDb db, IConfiguration cfg, CancellationToken ct) =>
+{
+    var by = await db.Notifications.AsNoTracking().GroupBy(x => x.Status)
+        .Select(g => new { status = g.Key, count = g.Count() }).ToListAsync(ct);
+    var oldest = await db.Notifications.AsNoTracking().OrderBy(x => x.CreatedAt)
+        .Select(x => (DateTime?)x.CreatedAt).FirstOrDefaultAsync(ct);
+    return Results.Ok(new
+    {
+        total = by.Sum(x => x.count),
+        byStatus = by.ToDictionary(x => x.status, x => x.count),
+        oldest,
+        retentionDays = cfg.GetValue("Retention:Days", 90),
+        failedRetentionDays = cfg.GetValue("Retention:FailedDays", 180)
+    });
+});
+
+app.MapPost("/api/notifications/cleanup", async (NotifyDb db, IConfiguration cfg, int? days, int? failedDays, CancellationToken ct) =>
+{
+    var d = days ?? cfg.GetValue("Retention:Days", 90);
+    var f = failedDays ?? cfg.GetValue("Retention:FailedDays", 180);
+    if (d < 1 && f < 1) return Results.BadRequest(new { error = "Give a number of days of at least 1." });
+    return Results.Ok(new { removed = await LogRetention.RunAsync(db, d, f, ct) });
 });
 
 app.Run();

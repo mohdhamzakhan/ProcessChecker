@@ -185,3 +185,13 @@ export function SafeLink({ url, label, instanceId, index }) {
         </div>
     );
 }
+export const isOverdue = (d) => !!d && toDate(d).getTime() < Date.now();
+
+export function DueTag({ dueAt }) {
+    if (!dueAt) return null;
+    const ms = toDate(dueAt).getTime() - Date.now();
+    const h = Math.round(Math.abs(ms) / 3600000);
+    const text = h < 1 ? "less than an hour" : h < 48 ? `${h} h` : `${Math.round(h / 24)} days`;
+    const cls = ms < 0 ? "due over" : ms < 86400000 ? "due soon" : "due";
+    return <span className={cls} title={fmt(dueAt)}>{ms < 0 ? `Overdue by ${text}` : `Due in ${text}`}</span>;
+}

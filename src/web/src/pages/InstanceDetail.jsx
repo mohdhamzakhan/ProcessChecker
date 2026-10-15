@@ -5,13 +5,14 @@ import { useUser } from "../user";
 import { buildLink } from "../links";
 import Icon from "../designer/Icon";
 import UserPicker from "../UserPicker";
-import { Badge, DynamicForm, ErrorBox, FileLinks, SafeLink, Stepper, fmt } from "../ui";
+import { Badge, DynamicForm, ErrorBox, FileLinks, SafeLink, Stepper, fmt, DueTag } from "../ui";
 
 function AssignBar({ detail, step, isAdmin, onDone }) {
     const [edit, setEdit] = useState(false);
     const [list, setList] = useState([]);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState(null);
+    const [links, setLinks] = useState([]);
 
     const isApproval = step.type === "Approval";
     const current = isApproval ? (step.approvals || []).map((a) => a.approver) : step.assignees || [];
@@ -87,7 +88,7 @@ function ObserversBar({ detail, canEdit, onDone }) {
     );
 }
 
-function StepAction({ detail, step, user, isAdmin, isStarter, canWork, onDone }) {
+function StepAction({ detail, step, user, ids, isAdmin, isStarter, canWork, onDone }) {
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState(null);
     const [note, setNote] = useState("");
@@ -120,17 +121,25 @@ function StepAction({ detail, step, user, isAdmin, isStarter, canWork, onDone })
     const header = <h3>Action needed: {step.name}</h3>;
     const assigned = step.assignees || [];
     const canAct = assigned.length > 0
-        ? isAdmin || assigned.includes(user.toLowerCase())
+        ? isAdmin || assigned.some((a) => ids.includes(a))
         : isAdmin || isStarter;
     const notYours = <p className="muted">This task is for someone else. Only they, or an admin, can complete it.</p>;
 
     if (step.type === "Approval") {
-        const me = step.approvals?.find((a) => a.approver === user.toLowerCase());
+        const me = step.approvals?.find((a) => !a.decision && ids.includes(a.approver));
+        const decided = (step.approvals || []).some((a) => a.decidedBy && ids.includes(a.decidedBy));
         return (
             <div className="panel">
                 {header}
+                <DueTag dueAt={step.dueAt} />
                 {bar}
-                {!me && <p className="muted">You are not an approver for this step.</p>}
+                {(step.approvals || []).length > 1 && (
+                    <p className="muted small">
+                        {step.approvals.filter((a) => a.decision === "Approved").length} of {step.approvals.length} approved
+                    </p>
+                )}
+                {!me && !decided && <p className="muted">You are not an approver for this step.</p>}
+                {decided && <p className="muted">You have already decided on this step.</p>}
                 {me && !me.decision && (
                     <>
                         <label><span>Note (optional)</span>
@@ -219,7 +228,8 @@ export default function InstanceDetail() {
 
     const s = detail.summary;
     const links = procDef?.links || [];
-    const ids = [me?.email, me?.username].filter(Boolean).map((x) => x.toLowerCase());
+    const ids = [me?.email, me?.username, ...(me?.groups || []).map((g) => `group:${g}`)]
+        .filter(Boolean).map((x) => x.toLowerCase());
     const isStarter = (s.startedBy || "").toLowerCase() === (user || "").toLowerCase();
     const involved = detail.steps.some((st) =>
         (st.assignees || []).some((a) => ids.includes(a)) || (st.approvals || []).some((a) => ids.includes(a.approver)));
@@ -230,7 +240,7 @@ export default function InstanceDetail() {
     const canWork = canManage || involved;
     const needsRequester = isAdmin && (procDef?.requesters || []).length > 0 && (detail.requesters || []).length === 0;
 
-    const active = detail.steps.find((x) => x.status === "InProgress" || x.status === "Failed");
+    const actives = detail.steps.filter((x) => x.status === "InProgress" || x.status === "Failed");
     const endedAt = detail.steps.find((x) => x.type === "End" && x.status === "Completed");
     const canCancel = canManage && (s.status === "Running" || s.status === "Failed");
     const built = links.map((l) => ({ ...l, ...buildLink(l.url, detail.data) }));
@@ -328,10 +338,10 @@ export default function InstanceDetail() {
                 )}
             </div>
 
-            {active && (
-                <StepAction key={active.id + active.status} detail={detail} step={active} user={user}
+            {actives.map((st) => (
+                <StepAction key={st.id + st.status} detail={detail} step={st} user={user} ids={ids}
                     isAdmin={isAdmin} isStarter={isStarter} canWork={canWork} onDone={(d) => setDetail(d)} />
-            )}
+            ))}
             {canCancel && <button className="secondary" onClick={cancel}>Cancel request</button>}
 
             <h3>Step history</h3>
@@ -347,19 +357,18 @@ export default function InstanceDetail() {
                                 <td>
                                     {st.approvals && (
                                         <div>{st.approvals.map((a) => (
-                                            <div key={a.approver}><small>{a.approver}: {a.decision || "waiting"}{a.note && ` (${a.note})`}</small></div>
+                                            <div key={a.approver}>
+                                                <small>
+                                                    {a.approver.startsWith("group:") ? `${a.approver.slice(6)} (group)` : a.approver}:{" "}
+                                                    {a.decision
+                                                        ? `${a.decision}${a.decidedBy && a.decidedBy !== a.approver ? ` by ${a.decidedBy}` : ""}`
+                                                        : "waiting"}
+                                                    {a.note && ` (${a.note})`}
+                                                </small>
+                                            </div>
                                         ))}</div>
                                     )}
-                                    {st.assignees && <div><small>Assigned to {st.assignees.join(", ")}</small></div>}
-                                    {st.error && <div className="ok-err">{st.error}</div>}
-                                    {st.type === "Decision" && st.output?.result && (
-                                        <div><small>Went the <b>{st.output.result === "then" ? "If true" : "Else"}</b> way. {st.output.reason}</small></div>
-                                    )}
-                                    {st.status === "Skipped" ? (
-                                        <div><small>Skipped: {st.output?.reason || "its condition was not met"}</small></div>
-                                    ) : st.output && (
-                                        <details><summary>output</summary><pre>{JSON.stringify(st.output, null, 2)}</pre></details>
-                                    )}
+                                    {st.dueAt && st.status === "InProgress" && <div><DueTag dueAt={st.dueAt} /></div>}
                                 </td>
                             </tr>
                         ))}

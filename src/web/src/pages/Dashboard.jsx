@@ -4,7 +4,7 @@ import { api } from "../api";
 import { useUser } from "../user";
 import Icon from "../designer/Icon";
 import { STEP_TYPES } from "../designer/model";
-import { ErrorBox, InstanceTable, ago } from "../ui";
+import { ErrorBox, InstanceTable, ago, isOverdue } from "../ui";
 
 const STATUS = [
     ["Running", "#f59e0b"], ["Completed", "#16a34a"], ["Rejected", "#ef4444"],
@@ -65,6 +65,7 @@ export default function Dashboard() {
     const total = stats?.total || 0;
     const max = Math.max(1, ...(stats?.perDay || []).map((d) => d.count));
     const waiting = tasks.mine || [];
+    const overdue = waiting.filter((t) => isOverdue(t.dueAt)).length;
 
     return (
         <>

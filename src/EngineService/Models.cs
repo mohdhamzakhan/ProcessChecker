@@ -59,6 +59,10 @@ public class StepInstance
     public DateTime? CompletedAt { get; set; }
     public List<StepApproval> Approvals { get; set; } = new();
     public string? Assignees { get; set; }     // ";a@x.com;b@y.com;" (empty = anyone)
+    public DateTime? DueAt { get; set; }
+    public int? RemindHours { get; set; }
+    public DateTime? LastReminderAt { get; set; }
+    public int ReminderCount { get; set; }
 }
 
 public class StepApproval
@@ -70,6 +74,7 @@ public class StepApproval
     public string? Decision { get; set; }              // null = waiting, Approved, Rejected
     public string? Note { get; set; }
     public DateTime? DecidedAt { get; set; }
+    public string? DecidedBy { get; set; }
 }
 
 public class TriggerSeen
@@ -85,30 +90,31 @@ public class TriggerSeen
 public record FileRef(string FileId, string? FileName);
 public record StartRequest(string ProcessKey, Dictionary<string, JsonElement>? Data, string? StartedBy, string? Title);
 public record ActRequest(string? By, string? Note, Dictionary<string, JsonElement>? Values, List<FileRef>? Files);
-public record StepAction(string Name, string? By, string? Note,
-    Dictionary<string, JsonElement>? Values, List<FileRef>? Files, bool IsAdmin = false);
+public record StepAction(string Name, string? By, string? Note, Dictionary<string, JsonElement>? Values,
+    List<FileRef>? Files, bool IsAdmin = false, IReadOnlyList<string>? Who = null);
 public record DefinitionInfo(
     Guid Id, string Key, string Name, int Version, bool IsActive,
     DateTime CreatedAt, ProcessDefinitionDto Definition);
 
 // ---------- Views returned to React ----------
-public record ApprovalView(string Approver, string? Decision, string? Note, DateTime? DecidedAt);
+public record ApprovalView(string Approver, string? Decision, string? Note, DateTime? DecidedAt, string? DecidedBy);
 
 public record StepView(
     Guid Id, string Key, string Name, string Type, int Order, string Status,
     string? ActionBy, DateTime? StartedAt, DateTime? CompletedAt, string? Error,
     JsonElement? Output, List<FieldDefinition>? Fields, bool? AllowUpload,
-    List<ApprovalView>? Approvals, List<string>? Assignees);
+    List<ApprovalView>? Approvals, List<string>? Assignees, DateTime? DueAt);
 
 public record InstanceSummary(
     Guid Id, string ProcessKey, string ProcessName, int ProcessVersion, string Title,
     string Status, string? StartedBy, DateTime CreatedAt, DateTime? CompletedAt,
-    int TotalSteps, int CompletedSteps, string? CurrentStep);
+    int TotalSteps, int CompletedSteps, string? CurrentStep, DateTime? DueAt);
+
+public record TaskItem(Guid InstanceId, string Title, string ProcessName,
+    string StepKey, string StepName, string StepType, DateTime? Since, string? Assignees, DateTime? DueAt);
 public record InstanceDetail(InstanceSummary Summary, Dictionary<string, JsonElement> Data,
     List<StepView> Steps, List<string> Observers, List<string> Requesters);
 
-public record TaskItem(Guid InstanceId, string Title, string ProcessName,
-    string StepKey, string StepName, string StepType, DateTime? Since, string? Assignees);
 
 public record ObserversRequest(string[]? Observers);
 public record ReassignRequest(string[]? Assignees);

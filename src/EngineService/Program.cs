@@ -4,11 +4,14 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Storage;
 using Oracle.ManagedDataAccess.Client;
 using ProcessChecker.Contracts;
+using System.Linq.Expressions;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Configuration.AddDockerSecrets();
 var cfg = builder.Configuration;
 
-builder.Services.AddDbContext<EngineDb>(o => o.UseOracle(cfg.GetConnectionString("Default")));
+builder.Services.AddDbContext<EngineDb>(o => o.UseOracle(builder.Configuration.GetConnectionString("Default"),
+    x => x.MigrationsHistoryTable(DbMigrator.HistoryTable("ENGINE"), DbObjects.Schema)));
 
 var gk = cfg["Gateway:Key"];
 void AddKey(HttpClient c) { if (!string.IsNullOrWhiteSpace(gk)) c.DefaultRequestHeaders.Add(InternalAuth.KeyHeader, gk); }
@@ -19,6 +22,19 @@ builder.Services.AddHttpClient<ConnectorClient>(c =>
 { c.BaseAddress = new Uri(cfg["Services:Connector"]!); c.Timeout = TimeSpan.FromSeconds(90); AddKey(c); });
 builder.Services.AddHttpClient<NotificationClient>(c =>
 { c.BaseAddress = new Uri(cfg["Services:Notification"]!); c.Timeout = TimeSpan.FromSeconds(30); AddKey(c); });
+builder.Services.AddHttpClient<IdentityResolver>(c =>
+{ c.BaseAddress = new Uri(cfg["Services:Gateway"] ?? "http://localhost:5000/"); c.Timeout = TimeSpan.FromSeconds(30); AddKey(c); });
+builder.Services.AddHttpClient<DocumentClient>(c =>
+{
+    c.BaseAddress = new Uri(cfg["Services:Document"] ?? "http://localhost:5005/");
+    c.Timeout = TimeSpan.FromSeconds(60);
+    AddKey(c);
+    c.DefaultRequestHeaders.Add(InternalAuth.RoleHeader, "Admin");               // the engine reads files as the system
+    c.DefaultRequestHeaders.Add(InternalAuth.UserHeader, "system@processchecker");
+});
+builder.Services.AddScoped<IStepHandler, ParallelHandler>();
+builder.Services.AddScoped<EventMailer>();
+builder.Services.AddHostedService<ReminderWorker>();
 builder.Services.AddHttpClient("docs", c => c.Timeout = TimeSpan.FromSeconds(60))
     .ConfigurePrimaryHttpMessageHandler(() =>
     {
@@ -53,6 +69,8 @@ builder.Services.AddSwaggerGen();
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
 
 var app = builder.Build();
+SecretCheck.Run(app.Configuration, app.Environment, app.Logger,
+    ("Gateway:Key", 24), ("ConnectionStrings:Default", 10));
 app.UseCors();
 app.UseInternalKey();
 app.UseSwagger();
@@ -74,6 +92,7 @@ app.Use(async (ctx, next) =>
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<EngineDb>();
+    await DbMigrator.RunAsync(db, "PC_INSTANCES", conn => EnsureObjectsAsync(db, conn), app.Logger);
     await db.Database.OpenConnectionAsync();
     try
     {
@@ -114,7 +133,7 @@ async Task<IResult> Act(HttpContext http, WorkflowEngine engine, EngineDb db, Gu
 
     r ??= new ActRequest(null, null, null, null);
     if (http.Caller() is { } who) r = r with { By = who };     // nobody can act as someone else
-    await engine.ActAsync(id, stepKey, new StepAction(action, r.By, r.Note, r.Values, r.Files, http.IsAdmin()), ct);
+    await engine.ActAsync(id, stepKey, new StepAction(action, r.By, r.Note, r.Values, r.Files, http.IsAdmin(), http.Identities()), ct);
 
     var inst = await db.Instances.AsNoTracking()
         .Include(i => i.Steps).ThenInclude(s => s.Approvals)
@@ -245,50 +264,50 @@ app.MapPost("/api/instances/{id:guid}/cancel", async (
 // ------------------------------------------------------------ inbox + dashboard
 app.MapGet("/api/tasks", async (HttpContext http, EngineDb db, string? user, CancellationToken ct) =>
 {
-    var email = (http.Caller() ?? user)?.Trim().ToLowerInvariant();
+    var ids = http.Identities();
+    var me = (http.Caller() ?? user)?.Trim().ToLowerInvariant() ?? "";
     var isAdmin = http.IsAdmin();
-    var tag = email == null ? null : ";" + email + ";";
 
-    var approvals = email == null
+    var approvals = ids.Count == 0
         ? new List<TaskItem>()
         : await db.Approvals.AsNoTracking()
-            .Where(a => a.Decision == null && a.Approver == email
+            .Where(a => a.Decision == null && ids.Contains(a.Approver)
                         && a.Step.Status == StepState.InProgress
-                        && a.Step.Instance.Status == InstanceStatus.Running)
+                        && a.Step.Instance.Status == InstanceStatus.Running
+                        && !a.Step.Approvals.Any(x => x.DecidedBy == me))
             .Select(a => new TaskItem(a.Step.InstanceId, a.Step.Instance.Title, a.Step.Instance.ProcessName,
-                a.Step.StepKey, a.Step.StepName, a.Step.StepType, a.Step.StartedAt, null))
+                a.Step.StepKey, a.Step.StepName, a.Step.StepType, a.Step.StartedAt, null, a.Step.DueAt))
             .ToListAsync(ct);
+    approvals = approvals.GroupBy(t => (t.InstanceId, t.StepKey)).Select(g => g.First()).ToList();
 
     var waiting = db.Steps.AsNoTracking()
         .Where(s => s.Status == StepState.InProgress
                     && (s.StepType == StepTypes.Form || s.StepType == StepTypes.Upload)
                     && s.Instance.Status == InstanceStatus.Running);
 
-    var assigned = tag == null
-        ? new List<TaskItem>()
-        : await waiting.Where(s => s.Assignees != null && s.Assignees.Contains(tag))
-            .Select(s => new TaskItem(s.InstanceId, s.Instance.Title, s.Instance.ProcessName,
-                s.StepKey, s.StepName, s.StepType, s.StartedAt, s.Assignees))
-            .ToListAsync(ct);
+    Expression<Func<StepInstance, TaskItem>> toItem = s => new TaskItem(s.InstanceId, s.Instance.Title,
+        s.Instance.ProcessName, s.StepKey, s.StepName, s.StepType, s.StartedAt, s.Assignees, s.DueAt);
 
-    // no one assigned: only the person who started the request (or an admin) can do it
+    var candidates = ids.Count == 0
+        ? new List<TaskItem>()
+        : await waiting.Where(s => s.Assignees != null
+                                   && db.Participants.Any(p => p.InstanceId == s.InstanceId
+                                                               && p.Role == PartRole.Assignee && ids.Contains(p.Email)))
+            .Select(toItem).ToListAsync(ct);
+    var assigned = candidates.Where(t => TaskMailer.Split(t.Assignees).Any(a => ids.Contains(a))).ToList();
+    var assignedKeys = assigned.Select(t => (t.InstanceId, t.StepKey)).ToHashSet();
+
     var open = await waiting
         .Where(s => s.Assignees == null
                     && (isAdmin || db.Participants.Any(p => p.InstanceId == s.InstanceId
-                                                            && p.Email == email && p.Role == PartRole.Starter)))
-        .Select(s => new TaskItem(s.InstanceId, s.Instance.Title, s.Instance.ProcessName,
-            s.StepKey, s.StepName, s.StepType, s.StartedAt, null))
-        .ToListAsync(ct);
+                                                            && p.Email == me && p.Role == PartRole.Starter)))
+        .Select(toItem).ToListAsync(ct);
 
     var others = isAdmin
-        ? (await waiting.Where(s => s.Assignees != null && (tag == null || !s.Assignees.Contains(tag)))
-            .Select(s => new TaskItem(s.InstanceId, s.Instance.Title, s.Instance.ProcessName,
-                s.StepKey, s.StepName, s.StepType, s.StartedAt, s.Assignees))
-            .ToListAsync(ct))
-          .Select(t => t with { Assignees = string.Join(", ", TaskMailer.Split(t.Assignees)) }).ToList()
+        ? (await waiting.Where(s => s.Assignees != null).Select(toItem).ToListAsync(ct))
+            .Where(t => !assignedKeys.Contains((t.InstanceId, t.StepKey)))
+            .Select(t => t with { Assignees = string.Join(", ", TaskMailer.Split(t.Assignees)) }).ToList()
         : new List<TaskItem>();
-
-    var ids = http.Identities();
 
     var observing = ids.Count == 0
         ? new List<InstanceSummary>()
@@ -454,7 +473,14 @@ app.MapPost("/api/poll/{key}/run-now", async (
     return Results.Ok(await poller.PollAsync(info, ct));
 });
 
-
+app.MapGet("/api/instances/{id:guid}/access", async (
+    HttpContext http, Guid id, string? level, EngineDb db, CancellationToken ct) =>
+{
+    var ok = level == "work"
+        ? await db.CanWorkAsync(http, id, ct)
+        : await db.Visible(http).AnyAsync(i => i.Id == id, ct);
+    return ok ? Results.NoContent() : Results.NotFound();
+}); 
 
 app.Run();
 
@@ -462,11 +488,19 @@ static async Task EnsureObjectsAsync(EngineDb db, System.Data.Common.DbConnectio
 {
     var s = DbObjects.Schema;
     Task Do(string sql) => db.Database.ExecuteSqlRawAsync(sql);
+    async Task Col(string table, string col, string ddl)
+    {
+        if (!await DbObjects.ColumnExistsAsync(conn, table, col)) await Do($"ALTER TABLE {s}.{table} ADD ({col} {ddl})");
+    }
 
-    if (!await DbObjects.ColumnExistsAsync(conn, "PC_INSTANCES", "OBSERVERS"))
-        await Do($"ALTER TABLE {s}.PC_INSTANCES ADD (OBSERVERS NVARCHAR2(2000))");
-    if (!await DbObjects.ColumnExistsAsync(conn, "PC_STEPS", "ASSIGNEES"))
-        await Do($"ALTER TABLE {s}.PC_STEPS ADD (ASSIGNEES NVARCHAR2(2000))");
+    await Col("PC_INSTANCES", "OBSERVERS", "NVARCHAR2(2000)");
+    await Col("PC_INSTANCES", "REQUESTER", "NVARCHAR2(2000)");
+    await Col("PC_STEPS", "ASSIGNEES", "NVARCHAR2(2000)");
+    await Col("PC_STEPS", "DUE_AT", "TIMESTAMP(7)");
+    await Col("PC_STEPS", "REMIND_HOURS", "NUMBER(10)");
+    await Col("PC_STEPS", "LAST_REMINDER_AT", "TIMESTAMP(7)");
+    await Col("PC_STEPS", "REMINDER_COUNT", "NUMBER(10) DEFAULT 0 NOT NULL");
+    await Col("PC_APPROVALS", "DECIDED_BY", "NVARCHAR2(200)");
 
     if (!await DbObjects.TableExistsAsync(conn, "PC_PARTICIPANTS"))
         await Do($"CREATE TABLE {s}.PC_PARTICIPANTS (ID RAW(16) NOT NULL, INSTANCE_ID RAW(16) NOT NULL, " +
@@ -482,6 +516,4 @@ static async Task EnsureObjectsAsync(EngineDb db, System.Data.Common.DbConnectio
                  "UPDATED_AT TIMESTAMP(7) NOT NULL, CONSTRAINT PC_DASHBOARDS_PK PRIMARY KEY (ID))");
     if (!await DbObjects.IndexExistsAsync(conn, "PC_DASH_OWNER_IX"))
         await Do($"CREATE INDEX {s}.PC_DASH_OWNER_IX ON {s}.PC_DASHBOARDS (OWNER_EMAIL)");
-    if (!await DbObjects.ColumnExistsAsync(conn, "PC_INSTANCES", "REQUESTER"))
-        await Do($"ALTER TABLE {s}.PC_INSTANCES ADD (REQUESTER NVARCHAR2(2000))");
 }

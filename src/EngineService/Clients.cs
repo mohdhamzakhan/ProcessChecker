@@ -76,26 +76,88 @@ public class ConnectorClient
     }
 }
 
+public record MailFile(string FileName, string ContentType, byte[] Bytes);
+
 public class NotificationClient
 {
     private static readonly JsonSerializerOptions J = new(JsonSerializerDefaults.Web);
     private readonly HttpClient _http;
     public NotificationClient(HttpClient http) => _http = http;
 
-    public async Task SendEmailAsync(
-        IEnumerable<string> to, string subject, string body, bool isHtml, CancellationToken ct)
+    /// Sends in batches of 40 recipients. `files` are attached to every batch.
+    public async Task SendEmailAsync(IEnumerable<string> to, string subject, string body, bool isHtml,
+        CancellationToken ct, IReadOnlyList<MailFile>? files = null)
     {
-        try
+        var all = to.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (all.Count == 0) return;
+
+        var attachments = files?.Select(f => new { fileName = f.FileName, contentType = f.ContentType, base64 = Convert.ToBase64String(f.Bytes) }).ToArray();
+        foreach (var chunk in all.Chunk(40))
         {
-            var res = await _http.PostAsJsonAsync("api/notifications/email",
-                new { to = to.ToArray(), subject, body, isHtml }, J, ct);
-            if (!res.IsSuccessStatusCode)
-                throw new InvalidOperationException(
-                    $"NotificationService returned {(int)res.StatusCode}: {await res.Content.ReadAsStringAsync(ct)}");
+            try
+            {
+                var res = await _http.PostAsJsonAsync("api/notifications/email", new { to = chunk, subject, body, isHtml, attachments }, J, ct);
+                if (!res.IsSuccessStatusCode)
+                    throw new InvalidOperationException(
+                        $"NotificationService returned {(int)res.StatusCode}: {await res.Content.ReadAsStringAsync(ct)}");
+            }
+            catch (HttpRequestException ex)
+            {
+                throw new InvalidOperationException($"NotificationService is unreachable: {ex.Message}");
+            }
         }
-        catch (HttpRequestException ex)
+    }
+}
+
+public class DocumentClient
+{
+    private readonly HttpClient _http;
+    public DocumentClient(HttpClient http) => _http = http;
+
+    public async Task<(byte[] Bytes, string ContentType)> GetAsync(Guid id, long maxBytes, CancellationToken ct)
+    {
+        using var res = await _http.GetAsync($"api/documents/{id}/download", HttpCompletionOption.ResponseHeadersRead, ct);
+        if (!res.IsSuccessStatusCode) throw new InvalidOperationException($"DocumentService answered {(int)res.StatusCode} for file {id}.");
+        if (res.Content.Headers.ContentLength > maxBytes) throw new InvalidOperationException("A file is larger than the attachment limit.");
+        var bytes = await res.Content.ReadAsByteArrayAsync(ct);
+        if (bytes.LongLength > maxBytes) throw new InvalidOperationException("A file is larger than the attachment limit.");
+        return (bytes, res.Content.Headers.ContentType?.MediaType ?? "application/octet-stream");
+    }
+}
+
+/// Turns emails, usernames and group:name into email addresses (usernames and groups are looked up by the gateway).
+public class IdentityResolver
+{
+    private static readonly JsonSerializerOptions J = new(JsonSerializerDefaults.Web);
+    private record Answer(List<string>? Emails);
+    private readonly HttpClient _http;
+    private readonly ILogger<IdentityResolver> _log;
+    public IdentityResolver(HttpClient http, ILogger<IdentityResolver> log) { _http = http; _log = log; }
+
+    public async Task<List<string>> ToEmailsAsync(IEnumerable<string?> identities, CancellationToken ct)
+    {
+        var emails = new List<string>();
+        var ask = new List<string>();
+        foreach (var raw in identities)
         {
-            throw new InvalidOperationException($"NotificationService is unreachable: {ex.Message}");
+            var id = (raw ?? "").Trim().ToLowerInvariant();
+            if (id.Length == 0 || id == "system:poll") continue;
+            if (id.Contains('@') && !id.StartsWith("group:", StringComparison.Ordinal)) emails.Add(id);
+            else ask.Add(id);
         }
+
+        if (ask.Count > 0)
+        {
+            try
+            {
+                var res = await _http.PostAsJsonAsync("internal/identities/resolve", new { items = ask.Distinct().ToArray() }, J, ct);
+                if (res.IsSuccessStatusCode)
+                    emails.AddRange((await res.Content.ReadFromJsonAsync<Answer>(J, ct))?.Emails ?? new List<string>());
+                else _log.LogWarning("Resolving people failed: HTTP {Code}", (int)res.StatusCode);
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+            { _log.LogWarning("Resolving people failed: {Msg}", ex.Message); }
+        }
+        return emails.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
     }
 }

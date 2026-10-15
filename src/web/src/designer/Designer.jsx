@@ -1,4 +1,5 @@
-﻿import { Fragment, useEffect, useMemo, useState } from "react";
+﻿import { Fragment, useEffect, useMemo, useState,useRef } from "react";
+import { createPortal } from "react-dom";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api";
 import { ErrorBox } from "../ui";
@@ -8,7 +9,7 @@ import { LinksProps, ProcessProps, StepProps } from "./Props";
 import {
     STEP_GROUPS, STEP_ORDER, STEP_TYPES, allIssues, blankState, buildTree, condSummary, countInside,
     fromDefinition, insertStep, laneSize, locate, moveStep, newStep, removeStep, shiftStep,
-    slugKey, stepIssues, toDefinition, uid, unique,
+    slugKey, stepIssues, toDefinition, uid, unique, laneDefs
 } from "./model";
 import "./designer.css";
 
@@ -23,38 +24,70 @@ function summary(st) {
         case "Link": return st.url || "No address yet";
         case "Decision": return st.condition?.conditions?.length ? `If ${condSummary(st.condition)}` : "No condition yet";
         case "End": return `${st.outcome || "Completed"}${st.reason ? ` · ${st.reason}` : ""}`;
+        case "Approval": return st.approvers.length ? `${st.approvers.join(", ")}${st.requireAll ? " (all must approve)" : ""}` : "No approvers yet";
+        case "Parallel": return `${(st.lanes || []).length} paths at the same time`;
         default: return "";
     }
 }
 
 /** The + between two steps; also a drop target. lane = null (main flow) or { of, path }. */
+/** The + between two steps; also a drop target. lane = null (main flow) or { of, path }. */
 function Connector({ id, lane, index, ctx }) {
     const open = ctx.menuAt === id;
+    const btnRef = useRef(null);
+
+    // Close menu when scrolling to prevent it from detaching from the button
+    useEffect(() => {
+        if (!open) return;
+        const handleScroll = () => ctx.setMenuAt(null);
+        window.addEventListener("scroll", handleScroll, true); // true = capture phase for internal scrolls
+        return () => window.removeEventListener("scroll", handleScroll, true);
+    }, [open, ctx]);
+
+    let menuPortal = null;
+    if (open && btnRef.current) {
+        const rect = btnRef.current.getBoundingClientRect();
+
+        menuPortal = createPortal(
+            <div className="addmenu" onClick={(e) => e.stopPropagation()}
+                style={{
+                    position: "fixed",
+                    top: `${rect.bottom + 8}px`,
+                    left: `${rect.left + (rect.width / 2)}px`,
+                    transform: "translateX(-50%)",
+                    zIndex: 9999, // Guarantee it floats above everything
+                    minWidth: "200px"
+                }}>
+                {STEP_ORDER.map((type) => {
+                    const m = STEP_TYPES[type];
+                    return (
+                        <button key={type} type="button" style={{ "--c": m.color }}
+                            onClick={() => { ctx.addStep(type, lane, index); ctx.setMenuAt(null); }}>
+                            <span className="pbadge"><Icon name={m.icon} size={16} /></span>{m.label}
+                        </button>
+                    );
+                })}
+            </div>,
+            document.body
+        );
+    }
+
     return (
         <DropZone mime={STEP_MIME} label="Drop here" onDrop={(p) => ctx.onDropStep(p, lane, index)}>
-            <button type="button" className={`plus${open ? " open" : ""}`} title="Insert a step here"
-                onClick={(e) => { e.stopPropagation(); ctx.setMenuAt(open ? null : id); }}>
-                <Icon name="plus" size={14} stroke={2.5} />
-            </button>
-            {open && (
-                <div className="addmenu" onClick={(e) => e.stopPropagation()}>
-                    {STEP_ORDER.map((type) => {
-                        const m = STEP_TYPES[type];
-                        return (
-                            <button key={type} type="button" style={{ "--c": m.color }}
-                                onClick={() => { ctx.addStep(type, lane, index); ctx.setMenuAt(null); }}>
-                                <span className="pbadge"><Icon name={m.icon} size={16} /></span>{m.label}
-                            </button>
-                        );
-                    })}
-                </div>
-            )}
+            <div style={{ display: "flex", justifyContent: "center" }}>
+                <button type="button" ref={btnRef} className={`plus${open ? " open" : ""}`} title="Insert a step here"
+                    onClick={(e) => { e.stopPropagation(); ctx.setMenuAt(open ? null : id); }}>
+                    <Icon name="plus" size={14} stroke={2.5} />
+                </button>
+                {menuPortal}
+            </div>
         </DropZone>
     );
 }
 
 function Lane({ nodes, lane, ctx }) {
     const key = lane ? `${lane.of}:${lane.path}` : "root";
+    const owner = lane ? ctx.steps.find((x) => x.uid === lane.of) : null;
     return (
         <>
             {nodes.map((n, i) => {
@@ -88,9 +121,11 @@ function Lane({ nodes, lane, ctx }) {
             {lane && nodes.length === 0 && (
                 <div className="laneempty">
                     <small className="muted">No steps on this path</small>
-                    <button type="button" className="secondary" onClick={() => ctx.addStep("End", lane, 0)}>
-                        <Icon name="stop" size={13} />End the request here
-                    </button>
+                    {owner?.type === "Decision" && (
+                        <button type="button" className="secondary" onClick={() => ctx.addStep("End", lane, 0)}>
+                            <Icon name="stop" size={13} />End the request here
+                        </button>
+                    )}
                 </div>
             )}
         </>
@@ -104,7 +139,7 @@ function NodeView({ n, first, last, ctx }) {
     const number = ctx.steps.findIndex((x) => x.uid === st.uid) + 1;
 
     const card = (
-        <div className={`scard${st.type === "Decision" ? " decision" : ""}${ctx.selected === st.uid ? " sel" : ""}${bad ? " bad" : ""}`}
+        <div className={`scard${laneDefs(st).length > 0 ? " decision" : ""}${ctx.selected === st.uid ? " sel" : ""}${bad ? " bad" : ""}`}
             style={{ "--c": m.color }} draggable
             onDragStart={(e) => startDrag(e, STEP_MIME, { kind: "move", uid: st.uid })}
             onDragEnd={endDrag}
@@ -131,16 +166,19 @@ function NodeView({ n, first, last, ctx }) {
         </div>
     );
 
-    if (st.type !== "Decision") return card;
+    const defs = laneDefs(st);
+    if (defs.length === 0) return card;
+    const par = st.type === "Parallel";
 
     return (
         <>
             {card}
-            <div className="lanes">
-                {["then", "else"].map((path) => (
-                    <div key={path} className={`lane ${path}`}>
-                        <span className="lanehead">{path === "then" ? "If true" : "Else"}</span>
-                        <Lane nodes={n[path]} lane={{ of: st.uid, path }} ctx={ctx} />
+            <div className={`lanes${par ? " par" : ""}`}
+                style={par ? { gridTemplateColumns: `repeat(${defs.length}, minmax(240px, 1fr))` } : undefined}>
+                {defs.map((l) => (
+                    <div key={l.id} className={`lane ${par ? "par" : l.id}`}>
+                        <span className="lanehead">{l.name || "Path"}</span>
+                        <Lane nodes={n.lanes[l.id] || []} lane={{ of: st.uid, path: l.id }} ctx={ctx} />
                     </div>
                 ))}
             </div>
@@ -206,7 +244,8 @@ export default function Designer() {
     const tree = useMemo(() => buildTree(state.steps), [state.steps]);
     const stepIndex = state.steps.findIndex((s) => s.uid === selected);
     const selectedStep = stepIndex >= 0 ? state.steps[stepIndex] : null;
-    const branched = state.steps.some((s) => s.type === "Decision");
+    const branched = state.steps.some((s) => laneDefs(s).length > 0);
+    const wideFlow = state.steps.some((s) => s.type === "Parallel" && (s.lanes || []).length >= 3);
 
     // ---------------------------------------------------------- canvas actions
     const addStep = (type, lane = null, index = null) => {
@@ -233,6 +272,7 @@ export default function Designer() {
             fields: (src.fields || []).map((f) => ({ ...f, uid: uid(), options: [...f.options] })),
             runIf: { match: src.runIf?.match || "all", conditions: (src.runIf?.conditions || []).map((c) => ({ ...c, uid: uid() })) },
             condition: { match: src.condition?.match || "all", conditions: (src.condition?.conditions || []).map((c) => ({ ...c, uid: uid() })) },
+            lanes: (src.lanes || []).map((l) => ({ ...l })), attachFrom: [...(src.attachFrom || [])],
         };
         const at = locate(state.steps, id);
         change((s) => ({ ...s, steps: insertStep(s.steps, copy, at.lane, at.index + 1) }));

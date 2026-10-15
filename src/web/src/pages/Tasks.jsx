@@ -4,13 +4,14 @@ import { api } from "../api";
 import { useUser } from "../user";
 import Icon from "../designer/Icon";
 import { STEP_TYPES } from "../designer/model";
-import { ErrorBox, ago } from "../ui";
+import { DueTag, ErrorBox, ago, isOverdue } from "../ui";
 
 function TaskRow({ t, showWho }) {
     const m = STEP_TYPES[t.stepType] || STEP_TYPES.Form;
     const verb = t.stepType === "Approval" ? "Approve or reject" : t.stepType === "Upload" ? "Upload a file" : "Fill in the form";
+    const late = isOverdue(t.dueAt);
     return (
-        <Link to={`/instances/${t.instanceId}`} className="task" style={{ "--c": m.color }}>
+        <Link to={`/instances/${t.instanceId}`} className="task" style={{ "--c": late ? "#dc2626" : m.color }}>
             <span className="tbadge"><Icon name={m.icon} size={20} /></span>
             <div className="tmain">
                 <b>{t.title}</b>
@@ -19,6 +20,7 @@ function TaskRow({ t, showWho }) {
             </div>
             <div className="tmeta">
                 <span className="tverb">{verb}</span>
+                <DueTag dueAt={t.dueAt} />
                 <small>{t.since ? `Waiting ${ago(t.since)}` : ""}</small>
             </div>
             <span className="tgo">Open →</span>
@@ -63,7 +65,8 @@ export default function Tasks() {
         ["requested", "My requests", data?.requested?.length],
         ...(isAdmin ? [["others", "Assigned to others", data?.others?.length]] : []),
     ];
-    const list = data?.[tab] || [];
+    const list = [...(data?.[tab] || [])].sort((a, b) => Number(isOverdue(b.dueAt)) - Number(isOverdue(a.dueAt)));
+    const lateMine = (data?.mine || []).filter((t) => isOverdue(t.dueAt)).length;
     const text = {
         mine: ["You are all caught up", "No tasks are waiting for you."],
         observing: ["Nothing to observe", "You are not observing any running request."],
@@ -84,6 +87,7 @@ export default function Tasks() {
                 {tabs.map(([k, label, n]) => (
                     <button key={k} className={`tab${tab === k ? " active" : ""}`} onClick={() => setTab(k)}>
                         {label}{n > 0 && <span className="count">{n}</span>}
+                        {k === "mine" && lateMine > 0 && <span className="count late">{lateMine} overdue</span>}.
                     </button>
                 ))}
             </div>

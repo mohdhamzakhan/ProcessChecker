@@ -53,6 +53,10 @@ public class EngineDb : DbContext
             e.HasMany(x => x.Approvals).WithOne(a => a.Step)
                 .HasForeignKey(a => a.StepInstanceId).OnDelete(DeleteBehavior.Cascade);
             e.Property(x => x.Assignees).HasColumnName("ASSIGNEES").HasMaxLength(2000);
+            e.Property(x => x.DueAt).HasColumnName("DUE_AT");
+            e.Property(x => x.RemindHours).HasColumnName("REMIND_HOURS");
+            e.Property(x => x.LastReminderAt).HasColumnName("LAST_REMINDER_AT");
+            e.Property(x => x.ReminderCount).HasColumnName("REMINDER_COUNT");
         });
 
         b.Entity<StepApproval>(e =>
@@ -63,6 +67,7 @@ public class EngineDb : DbContext
             e.Property(x => x.Decision).HasMaxLength(20);
             e.Property(x => x.Note).HasMaxLength(1000);
             e.HasIndex(x => x.Approver);
+            e.Property(x => x.DecidedBy).HasColumnName("DECIDED_BY").HasMaxLength(200);
         });
 
         b.Entity<TriggerSeen>(e =>

@@ -957,3 +957,22 @@ body.dnd-field .fields .dz {
         padding: 5px 10px;
         font-size: 12px;
     }
+/* ---- parallel paths ---- */
+.flow.branched.wide {
+    max-width: 1320px;
+}
+
+.lanes.par {
+    overflow-x: auto;
+    padding-bottom: 4px;
+}
+
+.lane.par {
+    min-width: 240px;
+    border-color: #7dd3fc;
+}
+
+    .lane.par .lanehead {
+        background: #e0f2fe;
+        color: #075985;
+    }

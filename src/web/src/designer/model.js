@@ -35,13 +35,14 @@ export const STEP_TYPES = {
     Link: { label: "Document link", icon: "link", color: "#0d9488", hint: "Build a link to a file or page" },
     Decision: { label: "If / Else", icon: "branch", color: "#ea580c", hint: "Two paths: one when a condition is true, one when it is not" },
     End: { label: "End request", icon: "stop", color: "#64748b", hint: "Close the request here, so nothing stays open" },
+    Parallel: { label: "Parallel", icon: "parallel", color: "#0ea5e9", hint: "Several paths at the same time. Continues when all are done" },
 };
 
-export const STEP_ORDER = ["Form", "Upload", "Approval", "Decision", "End", "Dispatch", "Notify", "DataFetch"];
+export const STEP_ORDER = ["Form", "Upload", "Approval", "Decision", "Parallel", "End", "Dispatch", "Notify", "DataFetch"];
 
 export const STEP_GROUPS = [
     { label: "Collect", types: ["Form", "Upload"] },
-    { label: "Decide", types: ["Approval", "Decision", "End"] },
+    { label: "Decide", types: ["Approval", "Decision", "Parallel", "End"] },
     { label: "Communicate", types: ["Dispatch", "Notify"] },
     { label: "Data", types: ["DataFetch"] },
 ];
@@ -91,7 +92,11 @@ export function newStep(type, steps) {
         runIf: { match: "all", conditions: [] },
         branch: null,
         condition: { match: "all", conditions: type === "Decision" ? [{ uid: uid(), field: "", op: "gt", value: "" }] : [] },
+        requireAll: false,
         outcome: "Completed", reason: "",
+        dueN: "", dueUnit: "days", remN: "", remUnit: "days",
+        attachFiles: false, attachFrom: [],
+        lanes: type === "Parallel" ? [{ id: "l1", name: "Path 1" }, { id: "l2", name: "Path 2" }] : [],
     };
     if (type === "Form") st.fields = [newField("text", [])];
     return st;
@@ -105,8 +110,35 @@ export const blankState = () => ({
     links: [],
     observers: [],
     requesters: [],
+    notify: emptyNotify(),
 });
+export const isGroup = (t) => /^group:[A-Za-z0-9_.\- $]{1,64}$/.test(t);
+export const isIdentity = (t) => isEmail(t) || isPlaceholder(t) || isGroup(t);
 
+export const toHours = (n, unit) => {
+    const v = Number(n);
+    return Number.isFinite(v) && v > 0 ? Math.round(v * (unit === "days" ? 24 : 1)) : undefined;
+};
+export const fromHours = (h) =>
+    !h ? { n: "", unit: "days" } : h % 24 === 0 ? { n: String(h / 24), unit: "days" } : { n: String(h), unit: "hours" };
+
+const blankRule = () => ({ on: false, toRequester: true, toStarter: false, to: [], message: "" });
+export const emptyNotify = () => ({ fileUploaded: blankRule(), requestEnded: blankRule() });
+
+export function parseNotify(list) {
+    const n = emptyNotify();
+    (list || []).forEach((r) => {
+        if (n[r.on]) n[r.on] = { on: true, toRequester: !!r.toRequester, toStarter: !!r.toStarter, to: r.to || [], message: r.message || "" };
+    });
+    return n;
+}
+
+export function buildNotifications(n) {
+    return ["fileUploaded", "requestEnded"].filter((k) => n?.[k]?.on).map((k) => ({
+        on: k, toRequester: !!n[k].toRequester, toStarter: !!n[k].toStarter,
+        to: n[k].to, message: n[k].message?.trim() || undefined,
+    }));
+}
 function fromDefinitionBase(def) {
     const t = def.trigger || {};
     return {
@@ -127,6 +159,7 @@ function fromDefinitionBase(def) {
             observers: def.observers || [],
             requesters: def.requesters || [],
             outcome: s.outcome || "Completed", reason: s.reason || "",
+            requireAll: !!s.requireAll,
             runIf: s.runIf
                 ? {
                     match: s.runIf.match || "all",
@@ -185,6 +218,8 @@ function toDefinitionBase(s) {
                 return { ...base, assignees: st.assignees };
             case "End":
                 return { ...base, outcome: st.outcome, reason: st.reason || undefined };
+            case "Approval":
+                return { ...base, approvers: st.approvers, requireAll: st.requireAll ? true : undefined };
             default:
                 return base;
         }
@@ -208,12 +243,17 @@ export function fromDefinition(def) {
     const byKey = Object.fromEntries(base.steps.map((x) => [x.key, x.uid]));
     const steps = base.steps.map((x, i) => {
         const raw = (def.steps || [])[i] || {};
-        const b = raw.branch && byKey[raw.branch.of]
-            ? { of: byKey[raw.branch.of], path: raw.branch.path === "else" ? "else" : "then" }
-            : null;
-        return { ...x, branch: b, condition: normCond(raw.condition) };
+        const b = raw.branch && byKey[raw.branch.of] ? { of: byKey[raw.branch.of], path: raw.branch.path || "then" } : null;
+        const d = fromHours(raw.dueHours);
+        const r = fromHours(raw.remindEveryHours);
+        return {
+            ...x, branch: b, condition: normCond(raw.condition),
+            dueN: d.n, dueUnit: d.unit, remN: r.n, remUnit: r.unit,
+            attachFiles: !!raw.attachFiles, attachFrom: raw.attachFrom || [],
+            lanes: (raw.lanes || []).map((l) => ({ id: l.id, name: l.name })),
+        };
     });
-    return { ...base, steps };
+    return { ...base, steps, notify: parseNotify(def.notifications) };
 }
 
 export function toDefinition(s) {
@@ -230,11 +270,20 @@ export function toDefinition(s) {
                 })),
             };
         if (st.branch && keyOf[st.branch.of]) extra.branch = { of: keyOf[st.branch.of], path: st.branch.path };
+        if (["Form", "Upload", "Approval"].includes(st.type)) {
+            extra.dueHours = toHours(st.dueN, st.dueUnit);
+            extra.remindEveryHours = toHours(st.remN, st.remUnit);
+        }
+        if ((st.type === "Dispatch" || st.type === "Notify") && st.attachFiles) {
+            extra.attachFiles = true;
+            extra.attachFrom = st.attachFrom || [];
+        }
+        if (st.type === "Parallel") extra.lanes = (st.lanes || []).map((l) => ({ id: l.id, name: (l.name || "").trim() }));
         return { ...out, ...extra };
     });
+    def.notifications = buildNotifications(s.notify);
     return def;
 }
-
 /** Values collected before step `index`: usable as {{name}} in later steps. */
 export function availableFields(state, index) {
     const seen = new Map();
@@ -266,7 +315,7 @@ export function stepIssues(st, all) {
     if (!st.name.trim()) out.push("Give this step a name.");
     if (!KEY.test(st.key)) out.push("The step key may only contain a-z, 0-9 and '-'.");
     else if (all.filter((x) => x.key === st.key).length > 1) out.push("Another step has the same key.");
-    const badWho = (st.assignees || []).filter((a) => !(isEmail(a) || isPlaceholder(a)));
+    const badWho = (st.assignees || []).filter((a) => !isIdentity(a));
     if (badWho.length) out.push(`Not an email or {{field}}: ${badWho.join(", ")}.`);
     (st.runIf?.conditions || []).forEach((c, n) => {
         if (!c.field.trim() || !/^[\w.\-]+$/.test(c.field.trim())) out.push(`Condition ${n + 1} needs a field name.`);
@@ -280,6 +329,14 @@ export function stepIssues(st, all) {
             if (OPS[c.op]?.needsValue && !String(c.value ?? "").trim()) out.push(`Condition ${n + 1} needs a value.`);
         });
     }
+    if (st.type === "Parallel") {
+        const ls = st.lanes || [];
+        if (ls.length < 2) out.push("A parallel step needs at least two paths.");
+        if (ls.some((l) => !(l.name || "").trim())) out.push("Give every path a name.");
+    }
+    [["deadline", st.dueN], ["reminder", st.remN]].forEach(([label, v]) => {
+        if (String(v ?? "").trim() !== "" && !(Number(v) > 0)) out.push(`The ${label} must be a number greater than 0.`);
+    });
     switch (st.type) {
         case "Form": {
             if (st.fields.length === 0) out.push("Add at least one field.");
@@ -348,10 +405,17 @@ export function allIssues(state) {
         if (!(Number(t.everyMinutes) >= 1)) p("Start trigger: check at least every 1 minute.");
         if (t.schema && !SCHEMA.test(t.schema)) p("Start trigger: the schema name is not valid.");
     }
-    const badObs = (state.observers || []).filter((o) => !(isEmail(o) || isPlaceholder(o)));
+    const badObs = (state.observers || []).filter((o) => !isIdentity(o));
     if (badObs.length) p(`Observers: not an email or {{field}}: ${badObs.join(", ")}.`);
-    const badReq = (state.requesters || []).filter((r) => !(isEmail(r) || isPlaceholder(r)));
+    const badReq = (state.requesters || []).filter((r) => !isIdentity(r));
     if (badReq.length) p(`Requester: not an email or {{field}}: ${badReq.join(", ")}.`);
+    [["fileUploaded", "when a file is uploaded"], ["requestEnded", "when the request ends"]].forEach(([k, label]) => {
+        const r = state.notify?.[k];
+        if (!r?.on) return;
+        if (!r.toRequester && !r.toStarter && r.to.length === 0) p(`Emails: choose who gets the email ${label}.`);
+        const bad = r.to.filter((x) => !isIdentity(x));
+        if (bad.length) p(`Emails ${label}: not an email, group or {{field}}: ${bad.join(", ")}.`);
+    });
     if (state.steps.length === 0) p("Add at least one step.");
     (state.links || []).forEach((l, n) => {
         const u = l.url.trim();
@@ -361,58 +425,60 @@ export function allIssues(state) {
     });
     state.steps.forEach((s) =>
         stepIssues(s, state.steps).forEach((text) => out.push({ scope: s.uid, text: `${s.name || "Step"}: ${text}` })));
+    laneProblems(buildTree(state.steps), out);
     return out;
 }
-/* ---------- If / Else lanes ---------- */
+//* ---------- paths: If / Else and Parallel ---------- */
+export const laneDefs = (st) =>
+    st.type === "Decision"
+        ? [{ id: "then", name: "If true" }, { id: "else", name: "Else" }]
+        : st.type === "Parallel" ? (st.lanes || []) : [];
+
+const mkNode = (step) => ({ step, lanes: Object.fromEntries(laneDefs(step).map((l) => [l.id, []])) });
+const kids = (n) => Object.values(n.lanes).flat();
+const insideNode = (n, id) => n.step.uid === id || kids(n).some((c) => insideNode(c, id));
+
 function findNode(roots, id) {
     for (const n of roots) {
         if (n.step.uid === id) return n;
-        const inner = findNode(n.then, id) || findNode(n.else, id);
-        if (inner) return inner;
+        for (const l of Object.values(n.lanes)) { const f = findNode(l, id); if (f) return f; }
     }
     return null;
 }
 const laneList = (roots, lane) => {
     if (!lane) return roots;
     const p = findNode(roots, lane.of);
-    return p ? p[lane.path === "else" ? "else" : "then"] : roots;
+    return p && p.lanes[lane.path] ? p.lanes[lane.path] : roots;
 };
-const insideNode = (n, id) =>
-    n.step.uid === id || n.then.some((c) => insideNode(c, id)) || n.else.some((c) => insideNode(c, id));
-
 function detach(list, id) {
     const i = list.findIndex((n) => n.step.uid === id);
     if (i >= 0) return list.splice(i, 1)[0];
-    for (const n of list) {
-        const t = detach(n.then, id) || detach(n.else, id);
-        if (t) return t;
-    }
+    for (const n of list) for (const l of Object.values(n.lanes)) { const t = detach(l, id); if (t) return t; }
     return null;
 }
 
-/** Flat steps -> nested nodes {step, then[], else[]} for drawing. */
+/** Flat steps -> nested nodes {step, lanes:{pathId:[...]}} for drawing. */
 export function buildTree(steps) {
-    const nodes = new Map(steps.map((s) => [s.uid, { step: s, then: [], else: [] }]));
+    const nodes = new Map(steps.map((s) => [s.uid, mkNode(s)]));
     const roots = [];
     steps.forEach((s) => {
         const n = nodes.get(s.uid);
         const parent = s.branch && nodes.get(s.branch.of);
-        if (parent) parent[s.branch.path === "else" ? "else" : "then"].push(n);
+        if (parent && parent.lanes[s.branch.path]) parent.lanes[s.branch.path].push(n);
         else { if (s.branch) n.step = { ...s, branch: null }; roots.push(n); }
     });
     return roots;
 }
 
-/** Nested nodes -> flat steps in execution order: a decision, its "if true" steps, then its "else" steps. */
+/** Nested nodes -> flat steps in execution order: a block, then the steps of each of its paths. */
 export function flatten(roots) {
     const out = [];
-    const walk = (n) => { out.push(n.step); n.then.forEach(walk); n.else.forEach(walk); };
+    const walk = (n) => { out.push(n.step); laneDefs(n.step).forEach((l) => (n.lanes[l.id] || []).forEach(walk)); };
     roots.forEach(walk);
     return out;
 }
 
-const branchOf = (lane) => (lane ? { of: lane.of, path: lane.path === "else" ? "else" : "then" } : null);
-
+const branchOf = (lane) => (lane ? { of: lane.of, path: lane.path } : null);
 export const laneSize = (steps, lane) => laneList(buildTree(steps), lane).length;
 
 export function locate(steps, id) {
@@ -423,18 +489,20 @@ export function locate(steps, id) {
     return { lane, index: laneList(roots, lane).indexOf(node) };
 }
 
+function countKids(n) { let c = 0; kids(n).forEach((k) => { c += 1 + countKids(k); }); return c; }
 export function countInside(steps, id) {
     const node = findNode(buildTree(steps), id);
-    let n = 0;
-    const walk = (x) => x.then.concat(x.else).forEach((k) => { n++; walk(k); });
-    if (node) walk(node);
-    return n;
+    return node ? countKids(node) : 0;
+}
+export function lanesCount(steps, parentUid, laneId) {
+    const p = findNode(buildTree(steps), parentUid);
+    return (p?.lanes[laneId] || []).reduce((c, k) => c + 1 + countKids(k), 0);
 }
 
 export function insertStep(steps, step, lane, index) {
     const roots = buildTree(steps);
     const target = laneList(roots, lane);
-    target.splice(Math.min(index, target.length), 0, { step: { ...step, branch: branchOf(lane) }, then: [], else: [] });
+    target.splice(Math.min(index, target.length), 0, mkNode({ ...step, branch: branchOf(lane) }));
     return flatten(roots);
 }
 
@@ -442,11 +510,11 @@ export function moveStep(steps, id, lane, index) {
     const roots = buildTree(steps);
     const node = findNode(roots, id);
     if (!node) return steps;
-    if (lane && insideNode(node, lane.of)) return steps;           // a block cannot be dropped into itself
+    if (lane && insideNode(node, lane.of)) return steps;            // a block cannot be dropped into itself
     const before = laneList(roots, lane).indexOf(node);
     detach(roots, id);
     const target = laneList(roots, lane);
-    const at = before >= 0 && before < index ? index - 1 : index;   // same lane, moving down
+    const at = before >= 0 && before < index ? index - 1 : index;
     node.step = { ...node.step, branch: branchOf(lane) };
     target.splice(Math.min(at, target.length), 0, node);
     return flatten(roots);
@@ -469,3 +537,25 @@ export function removeStep(steps, id) {
     detach(roots, id);
     return flatten(roots);
 }
+
+/** Removes a path of a Parallel block together with the steps inside it. */
+export function removeLane(steps, parentUid, laneId) {
+    const roots = buildTree(steps);
+    const p = findNode(roots, parentUid);
+    if (!p || !p.lanes[laneId]) return steps;
+    p.lanes[laneId] = [];
+    p.step = { ...p.step, lanes: (p.step.lanes || []).filter((l) => l.id !== laneId) };
+    return flatten(roots);
+}
+
+function laneProblems(nodes, out) {
+    nodes.forEach((n, i) => {
+        if (n.step.type === "End" && i < nodes.length - 1) {
+            const next = nodes[i + 1].step;
+            out.push({ scope: next.uid, text: `"${next.name || "A step"}" comes after "${n.step.name}" and can never run. Move the End step to the end of its path.` });
+        }
+        Object.values(n.lanes).forEach((l) => laneProblems(l, out));
+    });
+}
+
+

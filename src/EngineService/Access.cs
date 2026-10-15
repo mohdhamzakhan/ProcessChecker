@@ -67,12 +67,13 @@ public static class Requesters
 
 public static class Access
 {
-    /// The caller's identities: the email, and the AD username when known.
+    /// The caller's identities: the email, the AD username, and `group:name` for each AD group.
     public static List<string> Identities(this HttpContext c)
     {
         var list = new List<string>();
         if (c.Caller() is { } e) list.Add(e);
         if (c.CallerName() is { } n && !list.Contains(n)) list.Add(n);
+        foreach (var g in c.CallerGroups()) { var t = "group:" + g; if (!list.Contains(t)) list.Add(t); }
         return list;
     }
 
@@ -94,4 +95,6 @@ public static class Access
             p => p.InstanceId == id && ids.Contains(p.Email)
                  && p.Role != PartRole.Observer && p.Role != PartRole.Requester, ct);
     }
+
+
 }

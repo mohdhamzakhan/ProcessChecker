@@ -11,9 +11,24 @@ public static class StepTypes
     public const string Link = "Link";   // build a link to a file or page
     public const string Decision = "Decision";   // if / else with two lanes
     public const string End = "End";   // closes the request on this path
+    public const string Parallel = "Parallel";   // all paths run at the same time
 
     public static readonly string[] All =
         { Approval, Form, Dispatch, Upload, DataFetch, Notify, Link  };
+}
+
+public class LaneDefinition { 
+    public string Id { get; set; } = ""; 
+    public string Name { get; set; } = ""; 
+}
+
+public class NotifyRule
+{
+    public string On { get; set; } = "";               // fileUploaded | requestEnded
+    public bool ToRequester { get; set; }
+    public bool ToStarter { get; set; }
+    public List<string> To { get; set; } = new();      // emails, group:name, usernames, {{placeholders}}
+    public string? Message { get; set; }
 }
 
 public static class FieldTypes
@@ -38,6 +53,7 @@ public class ProcessDefinitionDto
     public List<string> Observers { get; set; } = new();   // emails or {{placeholders}}, can only watch
     public List<string> Requesters { get; set; } = new();   // usernames/emails or {{placeholders}}: who the request is for
     public List<LinkDefinition> Links { get; set; } = new();
+    public List<NotifyRule> Notifications { get; set; } = new();
 }
 
 public class LinkDefinition
@@ -86,6 +102,12 @@ public class StepDefinition
     public BranchDefinition? Branch { get; set; }    // set when the step sits in a lane of a Decision
     public string? Outcome { get; set; }   // End: Completed | Rejected | Cancelled
     public string? Reason { get; set; }    // End: text shown on the request, may contain {{placeholders}}
+    public int? DueHours { get; set; }
+    public int? RemindEveryHours { get; set; }
+    public bool AttachFiles { get; set; }
+    public List<string> AttachFrom { get; set; } = new();  // step keys; empty = every earlier step
+    public List<LaneDefinition> Lanes { get; set; } = new();
+    public bool RequireAll { get; set; }   // Approval: every approver must approve
 }
 public class BranchDefinition
 {

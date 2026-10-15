@@ -6,9 +6,9 @@ using ProcessChecker.Contracts;
 using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
-
-builder.Services.AddDbContext<DefinitionDb>(o =>
-    o.UseOracle(builder.Configuration.GetConnectionString("Default")));
+builder.Configuration.AddDockerSecrets();
+builder.Services.AddDbContext<DefinitionDb>(o => o.UseOracle(builder.Configuration.GetConnectionString("Default"),
+    x => x.MigrationsHistoryTable(DbMigrator.HistoryTable("DEFINITION"), DbObjects.Schema)));
 builder.Services.AddScoped<DefinitionValidator>();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
@@ -16,21 +16,14 @@ builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
     p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
 
 var app = builder.Build();
+SecretCheck.Run(app.Configuration, app.Environment, app.Logger,
+    ("Gateway:Key", 24), ("ConnectionStrings:Default", 10));
 app.UseCors();
 app.UseSwagger();
 app.UseSwaggerUI();
 
 using (var scope = app.Services.CreateScope())
-{
-    var db = scope.ServiceProvider.GetRequiredService<DefinitionDb>();
-    await db.Database.OpenConnectionAsync();
-    try
-    {
-        if (!await DbObjects.TableExistsAsync(db.Database.GetDbConnection(), "PC_DEFINITIONS"))
-            db.Database.GetService<IRelationalDatabaseCreator>().CreateTables();
-    }
-    finally { await db.Database.CloseConnectionAsync(); }
-}
+    await DbMigrator.RunAsync(scope.ServiceProvider.GetRequiredService<DefinitionDb>(), "PC_DEFINITIONS", null, app.Logger);
 
 var json = new JsonSerializerOptions(JsonSerializerDefaults.Web);
 

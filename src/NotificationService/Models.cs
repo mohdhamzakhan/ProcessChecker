@@ -19,6 +19,7 @@ public class NotificationLog
     public int Attempts { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? SentAt { get; set; }
+    public string? AttachmentNames { get; set; }
 }
 
 public class SmtpOptions
@@ -35,9 +36,11 @@ public class SmtpOptions
     public bool DryRun { get; set; }
     public string[] AllowedDomains { get; set; } = Array.Empty<string>();   // empty = allow all
     public int MaxRecipients { get; set; } = 50;
+    public int MaxAttachmentMb { get; set; } = 5;
 }
 
-public record EmailRequest(string[]? To, string? Subject, string? Body, bool? IsHtml);
+public record AttachmentDto(string? FileName, string? ContentType, string? Base64);
+public record EmailRequest(string[]? To, string? Subject, string? Body, bool? IsHtml, List<AttachmentDto>? Attachments = null);
 public record TestRequest(string To);
 
 public class NotifyException : Exception

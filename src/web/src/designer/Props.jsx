@@ -3,7 +3,7 @@ import { api } from "../api";
 import { DropZone, FIELD_MIME, endDrag, startDrag } from "./dnd";
 import {
     FIELD_ORDER, FIELD_TYPES, STEP_TYPES, availableFields, isEmail, isPlaceholder,
-    newField, slugKey, slugName, unique, placeholderNames, uid, OPS, condSummary, invertConditions
+    newField, slugKey, slugName, unique, placeholderNames, uid, OPS, condSummary, invertConditions, emptyNotify, lanesCount, removeLane
 } from "./model";
 import Icon from "./Icon";
 import UserPicker from "../UserPicker";
@@ -428,6 +428,43 @@ export function LinksProps({ state, change }) {
         </div>
     );
 }
+
+
+function NotifyEditor({ state, change, fields }) {
+    const events = [
+        ["fileUploaded", "When a file is uploaded", "A file added in a form or upload step."],
+        ["requestEnded", "When the request ends", "Completed, rejected or cancelled."],
+    ];
+    const cur = () => state.notify || emptyNotify();
+    const set = (k, p) => change((s) => {
+        const base = s.notify || emptyNotify();
+        return { ...s, notify: { ...base, [k]: { ...base[k], ...p } } };
+    });
+    return (
+        <div className="sect">
+            <h5>Send emails when…</h5>
+            {events.map(([k, label, hint]) => {
+                const r = cur()[k];
+                return (
+                    <div key={k} className="nrule">
+                        <label className="inline"><input type="checkbox" checked={r.on} onChange={(e) => set(k, { on: e.target.checked })} /><b>{label}</b></label>
+                        <small className="muted">{hint}</small>
+                        {r.on && (
+                            <>
+                                <label className="inline"><input type="checkbox" checked={r.toRequester} onChange={(e) => set(k, { toRequester: e.target.checked })} />The requester</label>
+                                <label className="inline"><input type="checkbox" checked={r.toStarter} onChange={(e) => set(k, { toStarter: e.target.checked })} />The person who started it</label>
+                                <UserPicker value={r.to} fields={fields} onChange={(to) => set(k, { to })} placeholder="Add other people or groups…" />
+                                <label><span>Extra message (optional)</span>
+                                    <PlaceholderInput multiline rows={2} value={r.message} fields={fields} onChange={(m) => set(k, { message: m })} /></label>
+                            </>
+                        )}
+                    </div>
+                );
+            })}
+            <p className="muted small">A requester is emailed only when an address can be found: an email in the data, or their company account.</p>
+        </div>
+    );
+}
 export function ProcessProps({ state, change, connections, dirty }) {
     const t = state.trigger;
     const fields = availableFields(state, state.steps.length);
@@ -521,6 +558,7 @@ export function ProcessProps({ state, change, connections, dirty }) {
                     {!state.isNew && (state.requesters || []).length > 0 &&
                         <ApplyRequesters processKey={state.key} disabled={dirty} />}
                 </div>
+                <NotifyEditor state={state} change={change} fields={availableFields(state, state.steps.length)} />
             </div>
             <LinksEditor links={state.links || []} fields={fields}
                 onChange={(links) => change((s) => ({ ...s, links }))} />
@@ -602,6 +640,90 @@ function ConditionsEditor({ title, value, fields, steps = [], index = 0, allowOp
         </div>
     );
 }
+
+function ScheduleEditor({ step, patch }) {
+    const unit = (key, ukey) => (
+        <div className="dur">
+            <input type="number" min={1} value={step[key]} placeholder="none" onChange={(e) => patch({ [key]: e.target.value })} />
+            <select value={step[ukey]} onChange={(e) => patch({ [ukey]: e.target.value })}>
+                <option value="hours">hours</option><option value="days">days</option>
+            </select>
+        </div>
+    );
+    return (
+        <div className="sect">
+            <h5>Deadline and reminders</h5>
+            <label><span>Due after the step starts waiting</span>{unit("dueN", "dueUnit")}</label>
+            <label><span>Remind the people responsible every</span>{unit("remN", "remUnit")}</label>
+            <p className="muted small">
+                Overdue tasks turn red in My Tasks and Requests. Reminders are emailed while the step is waiting (at most 10).
+                Leave a box empty for none.
+            </p>
+        </div>
+    );
+}
+
+function AttachEditor({ step, steps, index, patch }) {
+    const sources = steps.slice(0, index).filter((s) => s.type === "Form" || s.type === "Upload");
+    const toggle = (key) =>
+        patch({ attachFrom: step.attachFrom.includes(key) ? step.attachFrom.filter((k) => k !== key) : [...step.attachFrom, key] });
+    return (
+        <div className="sect">
+            <label className="inline">
+                <input type="checkbox" checked={!!step.attachFiles} onChange={(e) => patch({ attachFiles: e.target.checked })} />
+                Attach the files that were uploaded
+            </label>
+            {step.attachFiles && (
+                <>
+                    <p className="muted small">
+                        {step.attachFrom.length ? "Only files from the steps ticked below." : "Files from every earlier step. Tick steps to limit it."}
+                    </p>
+                    {sources.map((s) => (
+                        <label key={s.uid} className="checkrow">
+                            <input type="checkbox" checked={step.attachFrom.includes(s.key)} onChange={() => toggle(s.key)} />{s.name}
+                        </label>
+                    ))}
+                    <p className="muted small">Up to 10 files and 15 MB together. Your mail server may allow less.</p>
+                </>
+            )}
+        </div>
+    );
+}
+
+function LanesEditor({ step, steps, patch, change }) {
+    const lanes = step.lanes || [];
+    const add = () => {
+        if (lanes.length >= 6) return;
+        let n = lanes.length + 1;
+        while (lanes.some((l) => l.id === `l${n}`)) n++;
+        patch({ lanes: [...lanes, { id: `l${n}`, name: `Path ${lanes.length + 1}` }] });
+    };
+    const drop = (l) => {
+        const inside = lanesCount(steps, step.uid, l.id);
+        if (inside && !confirm(`Remove "${l.name}" and the ${inside} step(s) in it?`)) return;
+        change((s) => ({ ...s, steps: removeLane(s.steps, step.uid, l.id) }));
+    };
+    return (
+        <div className="sect">
+            <h5>Paths that run at the same time</h5>
+            {lanes.map((l) => (
+                <div key={l.id} className="wrow">
+                    <input value={l.name} placeholder="e.g. Flight"
+                        onChange={(e) => patch({ lanes: lanes.map((x) => (x.id === l.id ? { ...x, name: e.target.value } : x)) })} />
+                    <button type="button" className="icon danger" disabled={lanes.length <= 2} title="Remove this path" onClick={() => drop(l)}>
+                        <Icon name="trash" size={15} />
+                    </button>
+                </div>
+            ))}
+            <button type="button" className="secondary" disabled={lanes.length >= 6} onClick={add}>+ Add a path</button>
+            <p className="muted small">
+                Every path starts at the same moment. The steps after the block run when all paths are finished.
+                An End step inside a path closes the whole request.
+            </p>
+        </div>
+    );
+}
+
 export function StepProps({ step, index, state, change, connections }) {
     const patch = (p) => change((s) => ({ ...s, steps: s.steps.map((x) => (x.uid === step.uid ? { ...x, ...p } : x)) }));
     const fields = availableFields(state, index);
@@ -644,7 +766,16 @@ export function StepProps({ step, index, state, change, connections }) {
                     <>
                         <label><span>Who can approve?</span></label>
                         <UserPicker value={step.approvers} onChange={(a) => patch({ approvers: a })} fields={fields} />
-                        <p className="muted small">Everyone listed gets an email. One approval completes the step; one rejection stops the request.</p>
+                        <label className="inline">
+                            <input type="checkbox" checked={!!step.requireAll} onChange={(e) => patch({ requireAll: e.target.checked })} />
+                            Every approver must approve
+                        </label>
+                        <p className="muted small">
+                            Everyone listed gets an email.{" "}
+                            {step.requireAll
+                                ? "The step finishes when all of them have approved. One rejection stops the request."
+                                : "One approval completes the step. One rejection stops the request."}
+                        </p>
                     </>
                 )}
 
@@ -717,6 +848,10 @@ export function StepProps({ step, index, state, change, connections }) {
                         </p>
                     </>
                 )}
+                {["Form", "Upload", "Approval"].includes(step.type) && <ScheduleEditor step={step} patch={patch} />}
+                {(step.type === "Dispatch" || step.type === "Notify") &&
+                    <AttachEditor step={step} steps={state.steps} index={index} patch={patch} />}
+                {step.type === "Parallel" && <LanesEditor step={step} steps={state.steps} patch={patch} change={change} />}
                 {step.type === "Decision" && (
                     <ConditionsEditor title="If…" value={step.condition} fields={fields}
                         emptyText="No condition yet."

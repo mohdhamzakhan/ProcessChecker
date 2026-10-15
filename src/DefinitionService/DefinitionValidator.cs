@@ -12,13 +12,15 @@ public class DefinitionValidator
     new(@"^https?://[^/?#{}\s]+(?=[/?#]|$)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex AssigneeRegex = new(
-    @"^([^\s@;,{}]+@[^\s@;,{}]+\.[^\s@;,{}]+|\{\{\s*[\w.\-]+\s*\}\})$", RegexOptions.Compiled);
+        @"^([^\s@;,{}]+@[^\s@;,{}]+\.[^\s@;,{}]+|\{\{\s*[\w.\-]+\s*\}\}|group:[A-Za-z0-9_.\- $]{1,64})$",
+        RegexOptions.Compiled);
 
     private static readonly Regex LinkUrlStart =
     new(@"^https?://[^/?#{}\s]+(?=[/?#]|$)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly string[] CondOps =
     { "eq", "ne", "gt", "gte", "lt", "lte", "contains", "notcontains", "in", "notin", "empty", "notempty" };
     private static readonly Regex CondField = new(@"^[\w.\-]+$", RegexOptions.Compiled);
+
 
     private static void CheckConditions(RunIfDefinition? r, string p, List<string> errors)
     {
@@ -46,15 +48,40 @@ public class DefinitionValidator
     {
         var b = s.Branch;
         if (b is null) return;
-        if (b.Path is not ("then" or "else")) errors.Add($"{p}: the lane must be 'then' or 'else'.");
 
         var at = all.IndexOf(s);
         var parent = all.FindIndex(x => x.Key == b.Of);
-        if (parent < 0 || all[parent].Type != StepTypes.Decision)
-            errors.Add($"{p}: it belongs to an If / Else step that does not exist.");
-        else if (parent >= at)
-            errors.Add($"{p}: its If / Else step must come before it.");
+        if (parent < 0 || all[parent].Type is not (StepTypes.Decision or StepTypes.Parallel))
+        { errors.Add($"{p}: it belongs to a block that does not exist."); return; }
+        if (parent >= at) errors.Add($"{p}: its block must come before it.");
+
+        var owner = all[parent];
+        var ok = owner.Type == StepTypes.Decision
+            ? b.Path is "then" or "else"
+            : owner.Lanes.Any(l => l.Id == b.Path);
+        if (!ok) errors.Add($"{p}: it is in a path that does not exist.");
     }
+
+    private static void CheckSchedule(StepDefinition s, string p, List<string> errors)
+    {
+        if (s.DueHours is { } d && (d < 1 || d > 8760)) errors.Add($"{p}: the deadline must be between 1 hour and 1 year.");
+        if (s.RemindEveryHours is { } r && (r < 1 || r > 720)) errors.Add($"{p}: the reminder interval must be between 1 hour and 30 days.");
+    }
+
+    private static void CheckNotify(ProcessDefinitionDto d, List<string> errors)
+    {
+        if (d.Notifications.Count > 10) errors.Add("At most 10 email rules are allowed.");
+        foreach (var n in d.Notifications)
+        {
+            if (n.On is not ("fileUploaded" or "requestEnded")) errors.Add($"Unknown email rule '{n.On}'.");
+            if (!n.ToRequester && !n.ToStarter && n.To.Count == 0) errors.Add($"The email rule '{n.On}' has nobody to send to.");
+            foreach (var t in n.To)
+                if (!AssigneeRegex.IsMatch(t.Trim()))
+                    errors.Add("Email rule '" + n.On + "': '" + t + "' is not an email address, a group or a {{field}} placeholder.");
+            if ((n.Message?.Length ?? 0) > 1000) errors.Add("An email rule message is too long (1000 characters).");
+        }
+    }
+
     private static void CheckAssignees(StepDefinition s, string p, List<string> errors)
     {
         foreach (var a in s.Assignees)
@@ -130,12 +157,29 @@ public class DefinitionValidator
             if (CheckSchema(s.Schema, true) is { } se) errors.Add($"{p}: {se}");
             CheckRunIf(s, p, errors);
             CheckBranch(s, p, d.Steps, errors);
+            CheckNotify(d, errors);
             switch (s.Type)
             {
                 case StepTypes.Approval:
                     if (s.Approvers.Count == 0)
                         errors.Add($"{p}: at least one approver is required.");
+                    foreach (var a in s.Approvers)
+                        if (!AssigneeRegex.IsMatch(a.Trim()))
+                            errors.Add(p + ": '" + a + "' is not an email address, a group or a {{field}} placeholder.");
                     break;
+
+                case StepTypes.Parallel:
+                    {
+                        if (s.Lanes.Count is < 2 or > 6) errors.Add($"{p}: a Parallel step needs 2 to 6 paths.");
+                        var laneIds = new HashSet<string>();
+                        foreach (var l in s.Lanes)
+                        {
+                            if (!Regex.IsMatch(l.Id ?? "", "^[a-z0-9]{1,12}$")) errors.Add($"{p}: a path has an invalid id.");
+                            else if (!laneIds.Add(l.Id)) errors.Add($"{p}: two paths share the id '{l.Id}'.");
+                            if (string.IsNullOrWhiteSpace(l.Name) || l.Name.Length > 60) errors.Add($"{p}: every path needs a name (up to 60 characters).");
+                        }
+                        break;
+                    }
 
                 case StepTypes.Form:
                     ValidateFields(s, p, errors);

@@ -3,7 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { buildLink } from "../links";
 import Icon from "../designer/Icon";
-import { Badge, ErrorBox, FileLinks, SafeLink, ago, fmt } from "../ui";
+import { Badge, ErrorBox, FileLinks, SafeLink, ago, fmt, DueTag } from "../ui";
 
 const STATUSES = ["Running", "Completed", "Rejected", "Failed", "Cancelled"];
 const initials = (s) => (s || "?").split(/[\s@._:-]+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase();
@@ -197,6 +197,7 @@ export default function Requests() {
                                     {i.status === "Completed"
                                         ? <span className="muted">Finished {ago(i.completedAt)}</span>
                                         : (i.currentStep || "–")}
+                                    {i.status === "Running" && i.dueAt && <div><DueTag dueAt={i.dueAt} /></div>}
                                 </div>
 
                                 <div title={fmt(i.createdAt)} className="muted">{ago(i.createdAt)}</div>

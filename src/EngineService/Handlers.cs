@@ -43,24 +43,18 @@ public interface IStepHandler
 public class ApprovalHandler : IStepHandler
 {
     private readonly NotificationClient _mail;
+    private readonly IdentityResolver _ids;
     private readonly IConfiguration _cfg;
     private readonly ILogger<ApprovalHandler> _log;
 
-    public ApprovalHandler(NotificationClient mail, IConfiguration cfg, ILogger<ApprovalHandler> log)
-    {
-        _mail = mail; _cfg = cfg; _log = log;
-    }
+    public ApprovalHandler(NotificationClient mail, IdentityResolver ids, IConfiguration cfg, ILogger<ApprovalHandler> log)
+    { _mail = mail; _ids = ids; _cfg = cfg; _log = log; }
 
     public string Type => StepTypes.Approval;
 
     public async Task<StepResult> StartAsync(StepContext ctx, CancellationToken ct)
     {
-        var approvers = ctx.Def.Approvers
-            .Select(a => ctx.Data.Render(a).Trim().ToLowerInvariant())
-            .Where(a => a.Length > 0)
-            .Distinct()
-            .ToList();
-
+        var approvers = TaskMailer.Parse(ctx.Def.Approvers.Select(a => ctx.Data.Render(a)));
         if (approvers.Count == 0)
             return StepResult.Fail("No approvers could be resolved from the definition/data.");
 
@@ -70,17 +64,20 @@ public class ApprovalHandler : IStepHandler
         string? notifyError = null;
         try
         {
-            var link = $"{_cfg["Web:BaseUrl"]?.TrimEnd('/')}/instances/{ctx.Instance.Id}";
-            var body =
-                $"<p>Your approval is needed.</p>" +
-                $"<p><b>{WebUtility.HtmlEncode(ctx.Instance.Title)}</b><br/>" +
-                $"Step: {WebUtility.HtmlEncode(ctx.Step.StepName)}</p>" +
-                $"<p><a href=\"{link}\">Open the request</a></p>";
-            await _mail.SendEmailAsync(approvers, $"Approval needed: {ctx.Instance.Title}", body, true, ct);
+            var emails = await _ids.ToEmailsAsync(approvers, ct);
+            if (emails.Count > 0)
+            {
+                var link = $"{_cfg["Web:BaseUrl"]?.TrimEnd('/')}/instances/{ctx.Instance.Id}";
+                var body =
+                    "<p>Your approval is needed.</p>" +
+                    $"<p><b>{WebUtility.HtmlEncode(ctx.Instance.Title)}</b><br/>Step: {WebUtility.HtmlEncode(ctx.Step.StepName)}</p>" +
+                    $"<p><a href=\"{link}\">Open the request</a></p>";
+                await _mail.SendEmailAsync(emails, $"Approval needed: {ctx.Instance.Title}", body, true, ct);
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            notifyError = ex.Message;      // do not block the process, approvers can still act in the UI
+            notifyError = ex.Message;      // never block: approvers can still act in the UI
             _log.LogWarning("Approval email failed for {Id}: {Msg}", ctx.Instance.Id, ex.Message);
         }
 
@@ -96,22 +93,40 @@ public class ApprovalHandler : IStepHandler
         if (string.IsNullOrEmpty(by))
             throw new EngineException(400, "'by' (your email) is required.");
 
-        var row = ctx.Step.Approvals.FirstOrDefault(x => x.Approver == by)
-                  ?? throw new EngineException(403, "You are not an approver for this step.");
-        if (row.Decision != null)
+        // the caller's email, user name and groups: a group approver is decided by any one member
+        var who = new HashSet<string>((a.Who ?? Array.Empty<string>()).Select(x => x.ToLowerInvariant())) { by };
+
+        if (ctx.Step.Approvals.Any(x => x.DecidedBy == by))
             throw new EngineException(409, "You have already decided on this step.");
+
+        var row = ctx.Step.Approvals.FirstOrDefault(x => x.Decision == null && x.Approver == by)
+                  ?? ctx.Step.Approvals.FirstOrDefault(x => x.Decision == null && who.Contains(x.Approver));
+        if (row == null)
+            throw ctx.Step.Approvals.Any(x => who.Contains(x.Approver))
+                ? new EngineException(409, "This approval has already been given by someone else in your group.")
+                : new EngineException(403, "You are not an approver for this step.");
 
         row.Decision = a.Name == "approve" ? "Approved" : "Rejected";
         row.Note = a.Note;
         row.DecidedAt = DateTime.UtcNow;
+        row.DecidedBy = by;
         ctx.Step.ActionBy = by;
 
-        ctx.Data.Set($"{ctx.Step.StepKey}.decision", row.Decision);
-        ctx.Data.Set($"{ctx.Step.StepKey}.approver", by);
-
         var output = new { decision = row.Decision, by, note = a.Note };
-        // Rule: ANY one approver approves = step done; ANY rejection = process rejected
-        return Task.FromResult(a.Name == "approve" ? StepResult.Done(output) : StepResult.Reject(output));
+
+        if (a.Name == "reject")
+        {
+            ctx.Data.Set($"{ctx.Step.StepKey}.decision", "Rejected");
+            ctx.Data.Set($"{ctx.Step.StepKey}.approver", by);
+            return Task.FromResult(StepResult.Reject(output));
+        }
+
+        if (ctx.Def.RequireAll && ctx.Step.Approvals.Any(x => x.Decision == null))
+            return Task.FromResult(StepResult.Wait());
+
+        ctx.Data.Set($"{ctx.Step.StepKey}.decision", "Approved");
+        ctx.Data.Set($"{ctx.Step.StepKey}.approver", by);
+        return Task.FromResult(StepResult.Done(output));
     }
 }
 
@@ -232,7 +247,11 @@ public class UploadHandler : IStepHandler
 public abstract class EmailStepHandler : IStepHandler
 {
     private readonly NotificationClient _mail;
-    protected EmailStepHandler(NotificationClient mail) => _mail = mail;
+    private readonly DocumentClient _docs;
+    private readonly IConfiguration _cfg;
+
+    protected EmailStepHandler(NotificationClient mail, DocumentClient docs, IConfiguration cfg)
+    { _mail = mail; _docs = docs; _cfg = cfg; }
 
     public abstract string Type { get; }
     protected abstract string DefaultBody(StepContext ctx);
@@ -240,42 +259,77 @@ public abstract class EmailStepHandler : IStepHandler
     public async Task<StepResult> StartAsync(StepContext ctx, CancellationToken ct)
     {
         var to = ctx.Data.Render(ctx.Def.SendTo)
-            .Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .ToList();
-        if (to.Count == 0)
-            return StepResult.Fail("SendTo resolved to no recipients.");
+            .Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+        if (to.Count == 0) return StepResult.Fail("SendTo resolved to no recipients.");
 
-        var subject = ctx.Data.Render(
-            string.IsNullOrWhiteSpace(ctx.Def.Subject) ? ctx.Def.Name : ctx.Def.Subject);
+        var subject = ctx.Data.Render(string.IsNullOrWhiteSpace(ctx.Def.Subject) ? ctx.Def.Name : ctx.Def.Subject);
 
         string body;
         bool isHtml;
         if (string.IsNullOrWhiteSpace(ctx.Def.Body)) { body = DefaultBody(ctx); isHtml = true; }
         else { body = ctx.Data.Render(ctx.Def.Body); isHtml = false; }
 
-        try { await _mail.SendEmailAsync(to, subject, body, isHtml, ct); }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        List<MailFile>? files = null;
+        if (ctx.Def.AttachFiles)
         {
-            return StepResult.Fail(ex.Message);
+            try { files = await CollectFilesAsync(ctx, ct); }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            { return StepResult.Fail("Could not attach the files: " + ex.Message); }
         }
-        return StepResult.Done(new { to, subject });
+
+        try { await _mail.SendEmailAsync(to, subject, body, isHtml, ct, files); }
+        catch (Exception ex) when (ex is not OperationCanceledException) { return StepResult.Fail(ex.Message); }
+
+        return StepResult.Done(new { to, subject, attached = files?.Select(f => f.FileName).ToList() });
+    }
+
+    private async Task<List<MailFile>> CollectFilesAsync(StepContext ctx, CancellationToken ct)
+    {
+        var limit = _cfg.GetValue("Attachments:MaxTotalMb", 15) * 1024L * 1024L;
+        var only = ctx.Def.AttachFrom.Count > 0 ? ctx.Def.AttachFrom.ToHashSet(StringComparer.OrdinalIgnoreCase) : null;
+
+        var refs = new List<(Guid Id, string Name)>();
+        foreach (var s in ctx.Instance.Steps.OrderBy(x => x.OrderNo))
+        {
+            if (s.Status != StepState.Completed || string.IsNullOrEmpty(s.OutputJson)) continue;
+            if (only != null && !only.Contains(s.StepKey)) continue;
+
+            using var doc = JsonDocument.Parse(s.OutputJson);
+            if (!doc.RootElement.TryGetProperty("files", out var arr) || arr.ValueKind != JsonValueKind.Array) continue;
+            foreach (var f in arr.EnumerateArray())
+            {
+                var id = f.TryGetProperty("fileId", out var fid) ? fid.GetString() : null;
+                var name = f.TryGetProperty("fileName", out var fn) ? fn.GetString() : null;
+                if (Guid.TryParse(id, out var g) && !refs.Any(r => r.Id == g)) refs.Add((g, name ?? g.ToString("N")));
+            }
+        }
+        if (refs.Count > 10) throw new InvalidOperationException($"There are {refs.Count} files; at most 10 can be attached.");
+
+        var list = new List<MailFile>();
+        long total = 0;
+        foreach (var (id, name) in refs)
+        {
+            var (bytes, type) = await _docs.GetAsync(id, limit, ct);
+            total += bytes.LongLength;
+            if (total > limit) throw new InvalidOperationException($"The files together are larger than {limit / 1024 / 1024} MB.");
+            list.Add(new MailFile(name, type, bytes));
+        }
+        return list;
     }
 }
 
 public class DispatchHandler : EmailStepHandler
 {
-    public DispatchHandler(NotificationClient mail) : base(mail) { }
+    public DispatchHandler(NotificationClient mail, DocumentClient docs, IConfiguration cfg) : base(mail, docs, cfg) { }
     public override string Type => StepTypes.Dispatch;
 
-    // No body in the definition: send everything collected so far as a table
     protected override string DefaultBody(StepContext ctx)
     {
         var sb = new StringBuilder();
         sb.Append($"<p>Request: <b>{WebUtility.HtmlEncode(ctx.Instance.Title)}</b></p>");
         sb.Append("<table border=\"1\" cellpadding=\"6\" cellspacing=\"0\">");
         foreach (var kv in ctx.Data.All.Where(k => !k.Key.Contains('.')).OrderBy(k => k.Key))
-            sb.Append($"<tr><td>{WebUtility.HtmlEncode(kv.Key)}</td>" +
-                      $"<td>{WebUtility.HtmlEncode(DataBag.Text(kv.Value))}</td></tr>");
+            sb.Append($"<tr><td>{WebUtility.HtmlEncode(kv.Key)}</td><td>{WebUtility.HtmlEncode(DataBag.Text(kv.Value))}</td></tr>");
         sb.Append("</table>");
         return sb.ToString();
     }
@@ -283,12 +337,11 @@ public class DispatchHandler : EmailStepHandler
 
 public class NotifyHandler : EmailStepHandler
 {
-    public NotifyHandler(NotificationClient mail) : base(mail) { }
+    public NotifyHandler(NotificationClient mail, DocumentClient docs, IConfiguration cfg) : base(mail, docs, cfg) { }
     public override string Type => StepTypes.Notify;
 
     protected override string DefaultBody(StepContext ctx) =>
-        $"<p>Update on <b>{WebUtility.HtmlEncode(ctx.Instance.Title)}</b>: " +
-        $"{WebUtility.HtmlEncode(ctx.Step.StepName)}.</p>";
+        $"<p>Update on <b>{WebUtility.HtmlEncode(ctx.Instance.Title)}</b>: {WebUtility.HtmlEncode(ctx.Step.StepName)}.</p>";
 }
 
 // ------------------------------------------------------------ DataFetch
@@ -400,4 +453,13 @@ public class EndHandler : IStepHandler
         var reason = ctx.Data.Render(ctx.Def.Reason).Trim();
         return Task.FromResult(StepResult.End(outcome, new { ended = true, outcome, reason }));
     }
+}
+
+// ------------------------------------------------------------ Parallel (all paths start together)
+public class ParallelHandler : IStepHandler
+{
+    public string Type => StepTypes.Parallel;
+
+    public Task<StepResult> StartAsync(StepContext ctx, CancellationToken ct) =>
+        Task.FromResult(StepResult.Done(new { lanes = ctx.Def.Lanes.Select(l => l.Name).ToList() }));
 }

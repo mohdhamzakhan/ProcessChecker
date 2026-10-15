@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using DocumentService;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.EntityFrameworkCore;
@@ -6,9 +5,12 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Storage;
 using Oracle.ManagedDataAccess.Client;
 using ProcessChecker.Contracts;
+using System.Security.Cryptography;
+using static System.Net.WebRequestMethods;
+using File = System.IO.File;
 
 var builder = WebApplication.CreateBuilder(args);
-
+builder.Configuration.AddDockerSecrets();
 var opt = builder.Configuration.GetSection("Storage").Get<DocOptions>() ?? new DocOptions();
 if (opt.AllowedExtensions.Length == 0) opt.AllowedExtensions = FileRules.DefaultExtensions;
 opt.AllowedExtensions = opt.AllowedExtensions
@@ -20,39 +22,46 @@ builder.Services.Configure<FormOptions>(f => f.MultipartBodyLengthLimit = maxByt
 
 builder.Services.AddSingleton(opt);
 builder.Services.AddSingleton<DocStorage>();
-builder.Services.AddDbContext<DocumentDb>(o => o.UseOracle(builder.Configuration.GetConnectionString("Default")));
+builder.Services.AddDbContext<DocumentDb>(o => o.UseOracle(builder.Configuration.GetConnectionString("Default"),
+    x => x.MigrationsHistoryTable(DbMigrator.HistoryTable("DOCUMENT"), DbObjects.Schema)));
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+builder.Services.AddHttpClient("engine", c =>
+{
+    c.BaseAddress = new Uri(builder.Configuration["Services:Engine"] ?? "http://localhost:5002/");
+    c.Timeout = TimeSpan.FromSeconds(10);
+});
+builder.Services.AddScoped<InstanceAccess>();
 
 var app = builder.Build();
+SecretCheck.Run(app.Configuration, app.Environment, app.Logger,
+    ("Gateway:Key", 24), ("ConnectionStrings:Default", 10));
 app.UseInternalKey();
 app.UseSwagger();
 app.UseSwaggerUI();
 
 using (var scope = app.Services.CreateScope())
 {
-    var db = scope.ServiceProvider.GetRequiredService<DocumentDb>();
-    await db.Database.OpenConnectionAsync();
-    try
-    {
-        if (!await DbObjects.TableExistsAsync(db.Database.GetDbConnection(), "PC_DOCUMENTS"))
-            db.Database.GetService<IRelationalDatabaseCreator>().CreateTables();
-    }
-    catch (OracleException ex) when (ex.Number == 955) { /* table already exists */ }
-    finally { await db.Database.CloseConnectionAsync(); }
+    await DbMigrator.RunAsync(scope.ServiceProvider.GetRequiredService<DocumentDb>(), "PC_DOCUMENTS", null, app.Logger);
     app.Logger.LogInformation("Storing files in {Root} (max {Mb} MB; types: {Types})",
-        scope.ServiceProvider.GetRequiredService<DocStorage>().Root, opt.MaxSizeMb,
-        string.Join(" ", opt.AllowedExtensions));
+            scope.ServiceProvider.GetRequiredService<DocStorage>().Root, opt.MaxSizeMb,
+            string.Join(" ", opt.AllowedExtensions));
 }
 
 static DocumentInfo ToInfo(DocumentEntity d) => new(
     d.Id, d.FileName, d.ContentType, d.SizeBytes, d.InstanceId, d.StepKey, d.UploadedBy, d.UploadedAt);
+static async Task<bool> CanSee(DocumentEntity d, HttpContext http, InstanceAccess access, CancellationToken ct)
+{
+    if (http.IsAdmin()) return true;
+    if (string.Equals(d.UploadedBy, http.Caller(), StringComparison.OrdinalIgnoreCase)) return true;
+    return d.InstanceId is { } id && await access.AllowedAsync(http, id, false, ct);
+}
 
 app.MapGet("/api/health", () => Results.Ok(new { status = "ok" }));
 
 // ---- Upload: multipart/form-data with a "file" field (+ optional instanceId, stepKey) ----
 app.MapPost("/api/documents", async (
-    HttpContext http, DocumentDb db, DocStorage storage, DocOptions options, CancellationToken ct) =>
+    HttpContext http, DocumentDb db, DocStorage storage, DocOptions options, InstanceAccess access, CancellationToken ct) =>
 {
     if (!http.Request.HasFormContentType)
         return Results.BadRequest(new { error = "Send multipart/form-data with a field named 'file'." });
@@ -84,6 +93,8 @@ app.MapPost("/api/documents", async (
         return Results.BadRequest(new { error = $"The content of the file does not look like a real {ext} file." });
 
     Guid? instanceId = Guid.TryParse(form["instanceId"].ToString(), out var g) ? g : null;
+    if (instanceId != null && !await access.AllowedAsync(http, instanceId.Value, true, ct))
+        return Results.Json(new { error = "You cannot add files to this request." }, statusCode: 403);
     var stepKey = form["stepKey"].ToString().Trim();
     if (stepKey.Length > 100) stepKey = stepKey[..100];
 
@@ -145,10 +156,11 @@ app.MapPost("/api/documents", async (
 
 // ---- Download (always as an attachment, never rendered by the browser) ----
 app.MapGet("/api/documents/{id:guid}/download", async (
-    Guid id, HttpContext http, DocumentDb db, DocStorage storage, CancellationToken ct) =>
+    Guid id, HttpContext http, DocumentDb db, DocStorage storage, InstanceAccess access, CancellationToken ct) =>
 {
     var d = await db.Documents.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, ct);
     if (d is null) return Results.NotFound(new { error = "Document not found." });
+    if (!await CanSee(d, http, access, ct)) return Results.NotFound(new { error = "Document not found." });
 
     var path = storage.Resolve(d.StoredPath);
     if (!File.Exists(path))
@@ -158,17 +170,20 @@ app.MapGet("/api/documents/{id:guid}/download", async (
     return Results.File(path, d.ContentType, d.FileName, enableRangeProcessing: true);
 });
 
-app.MapGet("/api/documents/{id:guid}", async (Guid id, DocumentDb db, CancellationToken ct) =>
+app.MapGet("/api/documents/{id:guid}", async (Guid id, HttpContext http, DocumentDb db, InstanceAccess access, CancellationToken ct) =>
 {
     var d = await db.Documents.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, ct);
-    return d is null ? Results.NotFound() : Results.Ok(ToInfo(d));
+    return d is null || !await CanSee(d, http, access, ct) ? Results.NotFound() : Results.Ok(ToInfo(d));
 });
 
 // Files of one request. Listing everything is for admins only.
-app.MapGet("/api/documents", async (HttpContext http, DocumentDb db, Guid? instanceId, CancellationToken ct) =>
+app.MapGet("/api/documents", async (HttpContext http, DocumentDb db, Guid? instanceId, InstanceAccess access, CancellationToken ct) =>
 {
     if (instanceId is null && !http.IsAdmin())
         return Results.Json(new { error = "instanceId is required." }, statusCode: 403);
+
+    if (instanceId != null && !await access.AllowedAsync(http, instanceId.Value, false, ct))
+        return Results.NotFound();
 
     IQueryable<DocumentEntity> q = db.Documents.AsNoTracking();
     if (instanceId != null) q = q.Where(x => x.InstanceId == instanceId);

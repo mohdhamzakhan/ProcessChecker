@@ -14,7 +14,12 @@ public static class InternalAuth
     public const string KeyHeader = "X-Gateway-Key";
     public const string UserHeader = "X-User-Email";
     public const string RoleHeader = "X-User-Role";
+    public const string GroupsHeader = "X-User-Groups";
 
+    public static List<string> CallerGroups(this HttpContext c) =>
+        (c.Request.Headers[GroupsHeader].FirstOrDefault() ?? "")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(g => g.ToLowerInvariant()).Distinct().Take(300).ToList();
     public static string? Caller(this HttpContext c) =>
         c.Request.Headers[UserHeader].FirstOrDefault()?.Trim().ToLowerInvariant() is { Length: > 0 } s ? s : null;
 

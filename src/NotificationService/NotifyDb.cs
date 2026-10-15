@@ -23,6 +23,7 @@ public class NotifyDb : DbContext
             e.Property(x => x.Error).HasMaxLength(1000);
             e.HasIndex(x => x.Status);
             e.HasIndex(x => x.CreatedAt);
+            e.Property(x => x.AttachmentNames).HasColumnName("ATTACHMENTS").HasMaxLength(1000);
         });
     }
 }
