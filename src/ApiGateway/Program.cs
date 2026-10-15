@@ -347,7 +347,7 @@ admin.MapPatch("/{id:guid}", async (
     return Results.Ok(Dto(user));
 });
 
-app.MapGet("/api/auth/directory", async (string? q, GatewayDb db, AdService ad, ILogger<Program> log) =>
+app.MapGet("/api/auth/directory", async (string? q, ClaimsPrincipal me, GatewayDb db, AdService ad, ILogger<Program> log) =>
 {
     var term = (q ?? "").Trim();
     if (term.Length < 2) return Results.Ok(new { items = Array.Empty<DirItem>(), warning = (string?)null });
@@ -366,8 +366,9 @@ app.MapGet("/api/auth/directory", async (string? q, GatewayDb db, AdService ad, 
         {
             foreach (var p in await Task.Run(() => ad.Search(term)))
                 if (!items.Any(i => i.email == p.Email)) items.Add(new DirItem(p.Email, p.Name, p.Username, "AD", "user"));
-            foreach (var g in await Task.Run(() => ad.SearchGroups(term)))
-                items.Add(new DirItem(g.Token, g.Name, g.Sam, "AD group", "group"));
+            if (me.IsInRole(Roles.Admin))
+                foreach (var g in await Task.Run(() => ad.SearchGroups(term))) 
+                    items.Add(new DirItem(g.Token, g.Name, g.Sam, "AD group", "group"));
         }
         catch (AdUnavailableException ex)
         {
@@ -376,7 +377,7 @@ app.MapGet("/api/auth/directory", async (string? q, GatewayDb db, AdService ad, 
         }
     }
     return Results.Ok(new { items = items.OrderBy(i => i.kind).ThenBy(i => i.name).Take(25), warning });
-}).RequireAuthorization("admin");
+}).RequireAuthorization("authenticated");
 
 app.MapPost("/internal/identities/resolve", async (HttpContext http, ResolveRequest r, AdService ad, IMemoryCache cache) =>
 {

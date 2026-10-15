@@ -1,21 +1,23 @@
 ﻿import { useCallback, useEffect, useState } from "react";
-import { Link,useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { api, uploadDocument } from "../api";
 import { useUser } from "../user";
+import { useDialogs } from "../Dialogs";
 import { buildLink } from "../links";
 import Icon from "../designer/Icon";
 import UserPicker from "../UserPicker";
-import { Badge, DynamicForm, ErrorBox, FileLinks, SafeLink, Stepper, fmt, DueTag } from "../ui";
+import { Badge, DueTag, DynamicForm, ErrorBox, FileLinks, SafeLink, Stepper, fmt } from "../ui";
 
 function AssignBar({ detail, step, isAdmin, onDone }) {
     const [edit, setEdit] = useState(false);
     const [list, setList] = useState([]);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState(null);
-    const [links, setLinks] = useState([]);
 
     const isApproval = step.type === "Approval";
-    const current = isApproval ? (step.approvals || []).map((a) => a.approver) : step.assignees || [];
+    const current = isApproval
+        ? (step.approvals || []).filter((a) => a.decision !== "Delegated").map((a) => a.approver)
+        : step.assignees || [];
 
     const save = async () => {
         setBusy(true); setError(null);
@@ -88,6 +90,41 @@ function ObserversBar({ detail, canEdit, onDone }) {
     );
 }
 
+/** A person who holds a waiting task passes it to someone else. */
+function HandOver({ detail, step, onDone }) {
+    const [open, setOpen] = useState(false);
+    const [to, setTo] = useState([]);
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState(null);
+
+    const send = async () => {
+        setBusy(true); setError(null);
+        try {
+            onDone(await api.post(`/api/instances/${detail.summary.id}/steps/${step.key}/delegate`, { to: to[0] }));
+            setOpen(false);
+        } catch (e) { setError(e); } finally { setBusy(false); }
+    };
+
+    if (!open)
+        return (
+            <button type="button" className="secondary" onClick={() => setOpen(true)}>
+                <Icon name="users" size={15} /> Hand over
+            </button>
+        );
+
+    return (
+        <div className="assignedit" style={{ flexBasis: "100%" }}>
+            <p className="muted small" style={{ margin: "0 0 6px" }}>Pick the person who should do this instead. They get an email.</p>
+            <UserPicker value={to} onChange={(v) => setTo(v.slice(-1))} placeholder="Search a person…" />
+            <ErrorBox error={error} />
+            <div className="actions" style={{ marginTop: 8 }}>
+                <button type="button" disabled={busy || to.length === 0} onClick={send}>{busy ? "Handing over..." : "Hand over"}</button>
+                <button type="button" className="secondary" onClick={() => setOpen(false)}>Cancel</button>
+            </div>
+        </div>
+    );
+}
+
 function StepAction({ detail, step, user, ids, isAdmin, isStarter, canWork, onDone }) {
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState(null);
@@ -118,29 +155,25 @@ function StepAction({ detail, step, user, ids, isAdmin, isStarter, canWork, onDo
     if (step.status !== "InProgress") return null;
 
     const bar = <AssignBar detail={detail} step={step} isAdmin={isAdmin} onDone={onDone} />;
-    const header = <h3>Action needed: {step.name}</h3>;
+    const header = <h3>Action needed: {step.name} <DueTag dueAt={step.dueAt} /></h3>;
     const assigned = step.assignees || [];
-    const canAct = assigned.length > 0
-        ? isAdmin || assigned.some((a) => ids.includes(a))
-        : isAdmin || isStarter;
+    const mineAssigned = assigned.some((a) => ids.includes(a));
+    const canAct = assigned.length > 0 ? isAdmin || mineAssigned : isAdmin || isStarter;
     const notYours = <p className="muted">This task is for someone else. Only they, or an admin, can complete it.</p>;
 
     if (step.type === "Approval") {
-        const me = step.approvals?.find((a) => !a.decision && ids.includes(a.approver));
+        const live = (step.approvals || []).filter((a) => a.decision !== "Delegated");
+        const approved = live.filter((a) => a.decision === "Approved").length;
+        const mine = (step.approvals || []).find((a) => !a.decision && ids.includes(a.approver));
         const decided = (step.approvals || []).some((a) => a.decidedBy && ids.includes(a.decidedBy));
         return (
             <div className="panel">
                 {header}
-                <DueTag dueAt={step.dueAt} />
                 {bar}
-                {(step.approvals || []).length > 1 && (
-                    <p className="muted small">
-                        {step.approvals.filter((a) => a.decision === "Approved").length} of {step.approvals.length} approved
-                    </p>
-                )}
-                {!me && !decided && <p className="muted">You are not an approver for this step.</p>}
+                {live.length > 1 && <p className="muted small">{approved} of {live.length} approved</p>}
+                {!mine && !decided && <p className="muted">You are not an approver for this step.</p>}
                 {decided && <p className="muted">You have already decided on this step.</p>}
-                {me && !me.decision && (
+                {mine && !decided && (
                     <>
                         <label><span>Note (optional)</span>
                             <input value={note} onChange={(e) => setNote(e.target.value)} /></label>
@@ -148,6 +181,7 @@ function StepAction({ detail, step, user, ids, isAdmin, isStarter, canWork, onDo
                         <div className="actions" style={{ marginTop: 10 }}>
                             <button disabled={busy} onClick={() => run(() => api.post(`${base}/approve`, { note }))}>Approve</button>
                             <button disabled={busy} className="danger" onClick={() => run(() => api.post(`${base}/reject`, { note }))}>Reject</button>
+                            <HandOver detail={detail} step={step} onDone={onDone} />
                         </div>
                     </>
                 )}
@@ -162,6 +196,7 @@ function StepAction({ detail, step, user, ids, isAdmin, isStarter, canWork, onDo
                 {bar}
                 {!canAct ? notYours : (
                     <>
+                        {mineAssigned && <div style={{ margin: "8px 0" }}><HandOver detail={detail} step={step} onDone={onDone} /></div>}
                         <ErrorBox error={error} />
                         <DynamicForm fields={step.fields || []} allowUpload={step.allowUpload} busy={busy}
                             onSubmit={(values, f) =>
@@ -179,6 +214,7 @@ function StepAction({ detail, step, user, ids, isAdmin, isStarter, canWork, onDo
                 {bar}
                 {!canAct ? notYours : (
                     <>
+                        {mineAssigned && <div style={{ margin: "8px 0" }}><HandOver detail={detail} step={step} onDone={onDone} /></div>}
                         <p className="muted">Allowed: PDF, images, Word, Excel, CSV, TXT. Maximum 20 MB.</p>
                         <input type="file" onChange={(e) => setFile(e.target.files[0] || null)} />
                         <ErrorBox error={error} />
@@ -199,6 +235,7 @@ function StepAction({ detail, step, user, ids, isAdmin, isStarter, canWork, onDo
 export default function InstanceDetail() {
     const { id } = useParams();
     const { me, user, isAdmin } = useUser();
+    const { confirm } = useDialogs();
     const [detail, setDetail] = useState(null);
     const [error, setError] = useState(null);
     const [procDef, setProcDef] = useState(null);
@@ -215,14 +252,6 @@ export default function InstanceDetail() {
             .then((r) => setProcDef(r.definition))
             .catch(() => setProcDef(null));
     }, [processKey]);
-
-    useEffect(() => {
-        if (!detail) return;
-        const built = links.map((l) => ({ ...l, ...buildLink(l.url, detail.data) }));
-        api.get(`/api/definitions/${encodeURIComponent(detail.summary.processKey)}`)
-            .then((r) => setLinks(r.definition.links || []))
-            .catch(() => setLinks([]));
-    }, [detail?.summary.processKey]);   // eslint-disable-line
 
     if (!detail) return <><ErrorBox error={error} /><p className="muted">Loading...</p></>;
 
@@ -247,7 +276,9 @@ export default function InstanceDetail() {
     const files = detail.steps.flatMap((st) => (st.output?.files || []).map((f) => ({ ...f, step: st.name })));
 
     const cancel = async () => {
-        if (!confirm("Cancel this request?")) return;
+        const ok = await confirm("Cancel this request? Every step that has not finished is closed.",
+            { title: "Cancel request", okLabel: "Cancel the request", danger: true });
+        if (!ok) return;
         try { await api.post(`/api/instances/${id}/cancel`); load(); } catch (e) { setError(e); }
     };
 
@@ -267,7 +298,7 @@ export default function InstanceDetail() {
                     <Icon name="eye" size={16} />
                     <span>
                         {isRequester
-                            ? "This is your request. An administrator is handling it, and any booking documents will appear below."
+                            ? "This is your request. It is being handled for you, and any booking documents will appear below."
                             : "You are observing this request. You can follow it but you cannot act on it."}
                     </span>
                 </div>
@@ -275,9 +306,7 @@ export default function InstanceDetail() {
             {endedAt && (
                 <div className="hintbar">
                     <Icon name="stop" size={16} />
-                    <span>
-                        This request ended at “{endedAt.name}”{endedAt.output?.reason ? `: ${endedAt.output.reason}` : "."}
-                    </span>
+                    <span>This request ended at “{endedAt.name}”{endedAt.output?.reason ? `: ${endedAt.output.reason}` : "."}</span>
                 </div>
             )}
             {needsRequester && (
@@ -288,24 +317,6 @@ export default function InstanceDetail() {
             )}
 
             <Stepper steps={detail.steps} />
-
-            {built.length > 0 && (
-                <div className="panel">
-                    <h3>Documents</h3>
-                    {built.map((l, i) =>
-                        l.valid ? (
-                            <SafeLink key={i} url={l.url} label={l.label} />
-                        ) : (
-                            <div key={i} className="linkrow">
-                                <Icon name="link" size={16} />
-                                <span className="muted">
-                                    {l.label}: {l.missing.length ? `waiting for ${l.missing.join(", ")}` : "the address is not valid"}
-                                </span>
-                            </div>
-                        )
-                    )}
-                </div>
-            )}
 
             {(canManage || (detail.observers || []).length > 0) && (
                 <ObserversBar detail={detail} canEdit={canManage} onDone={(d) => setDetail(d)} />
@@ -356,8 +367,8 @@ export default function InstanceDetail() {
                                 <td>{st.actionBy || ""}</td><td>{fmt(st.startedAt)}</td><td>{fmt(st.completedAt)}</td>
                                 <td>
                                     {st.approvals && (
-                                        <div>{st.approvals.map((a) => (
-                                            <div key={a.approver}>
+                                        <div>{st.approvals.map((a, n) => (
+                                            <div key={a.approver + n}>
                                                 <small>
                                                     {a.approver.startsWith("group:") ? `${a.approver.slice(6)} (group)` : a.approver}:{" "}
                                                     {a.decision
@@ -368,7 +379,17 @@ export default function InstanceDetail() {
                                             </div>
                                         ))}</div>
                                     )}
+                                    {st.assignees && <div><small>Assigned to {st.assignees.join(", ")}</small></div>}
                                     {st.dueAt && st.status === "InProgress" && <div><DueTag dueAt={st.dueAt} /></div>}
+                                    {st.error && <div className="ok-err">{st.error}</div>}
+                                    {st.type === "Decision" && st.output?.result && (
+                                        <div><small>Went the <b>{st.output.result === "then" ? "If true" : "Else"}</b> way. {st.output.reason}</small></div>
+                                    )}
+                                    {st.status === "Skipped" ? (
+                                        <div><small>Skipped: {st.output?.reason || "its condition was not met"}</small></div>
+                                    ) : st.output && (
+                                        <details><summary>output</summary><pre>{JSON.stringify(st.output, null, 2)}</pre></details>
+                                    )}
                                 </td>
                             </tr>
                         ))}

@@ -2,6 +2,7 @@
 import { createPortal } from "react-dom";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api";
+import { useDialogs } from "../Dialogs";
 import { ErrorBox } from "../ui";
 import Icon from "./Icon";
 import { DropZone, STEP_MIME, endDrag, startDrag } from "./dnd";
@@ -188,6 +189,7 @@ function NodeView({ n, first, last, ctx }) {
 }
 
 export default function Designer() {
+    const { confirm, alert, prompt } = useDialogs();
     const { key: routeKey } = useParams();
     const nav = useNavigate();
     const [state, setState] = useState(blankState);
@@ -279,9 +281,12 @@ export default function Designer() {
         setSelected(copy.uid);
     };
 
-    const remove = (id) => {
+    const remove = async (id) => {
         const inside = countInside(state.steps, id);
-        if (!confirm(inside ? `Remove this step and the ${inside} step${inside === 1 ? "" : "s"} inside it?` : "Remove this step?")) return;
+        const ok = await confirm(
+            inside ? `Remove this step and the ${inside} step${inside === 1 ? "" : "s"} inside it?` : "Remove this step?",
+            { title: "Remove step", okLabel: "Remove", danger: true });
+        if (!ok) return;
         change((s) => ({ ...s, steps: removeStep(s.steps, id) }));
         setSelected("process");
     };
@@ -303,16 +308,18 @@ export default function Designer() {
 
     const saveCopy = async () => {
         if (issues.length) { setPanel("issues"); return; }
-        const k = prompt("Key for the new process (letters, numbers, -):", `${state.key}-copy`);
+        const k = await prompt("Key for the new process (letters, numbers, -):", {
+            title: "Save as copy", defaultValue: `${state.key}-copy`, okLabel: "Save copy",
+        });
         if (!k) return;
         const key = slugKey(k);
-        if (!key) { alert("That key is not valid."); return; }
+        if (!key) { await alert("That key is not valid."); return; }
 
         setBusy(true); setError(null); setMsg("");
         try {
             try {
                 await api.get(`/api/definitions/${encodeURIComponent(key)}`);
-                alert(`A process with the key "${key}" already exists. Choose another key.`);
+                await alert(`A process with the key "${key}" already exists. Choose another key.`);
                 return;
             } catch (e) { if (e.status !== 404) throw e; }
 
@@ -430,7 +437,7 @@ export default function Designer() {
                 </aside>
 
                 <section className="pane canvas">
-                    <div className={`flow${branched ? " branched" : ""}`}>
+                    <div className={`flow${branched ? " branched" : ""}${wideFlow ? " wide" : ""}`}>
                         <div className={`node start${selected === "process" ? " sel" : ""}`} onClick={() => setSelected("process")}>
                             <span className="nbadge"><Icon name="play" size={15} /></span>
                             <div><b>Start</b><small>{startText}</small></div>

@@ -187,6 +187,59 @@ public class WorkflowEngine
         await _tasks.NotifyAsync(inst, step, list, by, ct);     // after the change is saved
     }
 
+    public async Task DelegateAsync(Guid id, string stepKey, string? to, string by, IReadOnlyList<string> who, CancellationToken ct)
+    {
+        var inst = await LoadAsync(id, ct);
+        if (inst.Status != InstanceStatus.Running)
+            throw new EngineException(409, $"This request is {inst.Status} and cannot be changed.");
+
+        var step = inst.Steps.FirstOrDefault(s => s.StepKey == stepKey)
+                   ?? throw new EngineException(404, $"Step '{stepKey}' was not found.");
+        if (step.Status != StepState.InProgress)
+            throw new EngineException(409, "Only a step that is waiting can be handed over.");
+
+        var target = TaskMailer.Parse(new[] { to }).FirstOrDefault()
+                     ?? throw new EngineException(400, "Choose a person: a valid email address or a group.");
+        if (who.Contains(target))
+            throw new EngineException(400, "You cannot hand a task over to yourself.");
+
+        var direct = who.Where(w => !w.StartsWith("group:")).ToHashSet();
+        var now = DateTime.UtcNow;
+
+        switch (step.StepType)
+        {
+            case StepTypes.Approval:
+                {
+                    var mine = step.Approvals.Where(a => a.Decision == null && direct.Contains(a.Approver)).ToList();
+                    var viaGroup = step.Approvals.Any(a => a.Decision == null && who.Contains(a.Approver));
+                    if (mine.Count == 0 && !viaGroup)
+                        throw new EngineException(403, "This task is not yours to hand over.");
+
+                    foreach (var m in mine) { m.Decision = "Delegated"; m.DecidedAt = now; m.Note = $"Handed over to {target}"; }
+                    if (!step.Approvals.Any(a => a.Decision == null && a.Approver == target))
+                        step.Approvals.Add(new StepApproval { StepInstanceId = step.Id, Approver = target });
+                    break;
+                }
+            case StepTypes.Form:
+            case StepTypes.Upload:
+                {
+                    var assigned = TaskMailer.Split(step.Assignees);
+                    if (!assigned.Any(a => who.Contains(a)))
+                        throw new EngineException(403, "This task is not yours to hand over.");
+
+                    var next = assigned.Where(a => !direct.Contains(a)).ToList();   // your own entry goes
+                    if (!next.Contains(target)) next.Add(target);
+                    step.Assignees = TaskMailer.Join(next);
+                    break;
+                }
+            default:
+                throw new EngineException(400, "This kind of step cannot be handed over.");
+        }
+
+        await SaveAsync(inst, ct);
+        await _tasks.NotifyAsync(inst, step, new[] { target }, by, ct);
+    }
+
     // ---------------------------------------------------------------- core loop
     private async Task AdvanceAsync(ProcessInstance inst, ProcessDefinitionDto def, DataBag data, CancellationToken ct)
     {

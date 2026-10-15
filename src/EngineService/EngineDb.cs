@@ -38,6 +38,19 @@ public class EngineDb : DbContext
             e.Property(x => x.Requester).HasColumnName("REQUESTER").HasMaxLength(2000);
         });
 
+        b.Entity<AwayEntity>(e =>
+        {
+            e.ToTable("PC_AWAY");
+            e.Property(x => x.Id).HasColumnName("ID").ValueGeneratedNever();
+            e.Property(x => x.Email).HasColumnName("EMAIL").HasMaxLength(200);
+            e.Property(x => x.DelegateTo).HasColumnName("DELEGATE_TO").HasMaxLength(200);
+            e.Property(x => x.FromAt).HasColumnName("FROM_AT");
+            e.Property(x => x.ToAt).HasColumnName("TO_AT");
+            e.Property(x => x.Active).HasColumnName("ACTIVE");
+            e.Property(x => x.CreatedAt).HasColumnName("CREATED_AT");
+            e.HasIndex(x => x.Email).IsUnique();
+        });
+
         b.Entity<StepInstance>(e =>
         {
             e.ToTable("PC_STEPS");

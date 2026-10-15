@@ -4,6 +4,7 @@ import { useUser } from "../user";
 import Icon from "../designer/Icon";
 import { uid } from "../designer/model";
 import { ErrorBox, InstanceTable } from "../ui";
+import { useDialogs } from "../Dialogs";
 
 const METRICS = {
     total: { label: "Total requests", icon: "workflow", color: "#4f46e5" },
@@ -216,6 +217,7 @@ const starter = () => ({
 });
 
 export default function Dashboards() {
+    const { confirm } = useDialogs();
     const { isAdmin } = useUser();
     const [list, setList] = useState(null);
     const [scope, setScope] = useState([]);
@@ -266,7 +268,7 @@ export default function Dashboards() {
     };
 
     const remove = async () => {
-        if (!confirm("Delete this dashboard?")) return;
+        if (!(await confirm("Delete this dashboard?", { title: "Delete dashboard", okLabel: "Delete", danger: true }))) return;
         try { await api.del(`/api/dashboards/${selId}`); await load(); } catch (e) { setError(e); }
     };
 

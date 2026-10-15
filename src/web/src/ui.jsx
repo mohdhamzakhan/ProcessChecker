@@ -148,7 +148,9 @@ export function DynamicForm({ fields, allowUpload, onSubmit, busy, submitLabel =
 
 /** Uploaded files, each with View and Download */
 export function FileLinks({ files }) {
+    import { useDialogs } from "./Dialogs"
     const [view, setView] = useState(null);
+    const { alert } = useDialogs();
     if (!files?.length) return null;
     return (
         <>
@@ -160,7 +162,7 @@ export function FileLinks({ files }) {
                     <button className="link" type="button"
                         onClick={() => setView({ kind: "file", id: f.fileId, name: f.fileName })}>View</button>
                     <button className="link" type="button"
-                        onClick={() => downloadFile(f.fileId, f.fileName).catch((e) => alert(e.message))}>Download</button>
+                        onClick={() => downloadFile(f.fileId, f.fileName).catch((e) => useDialogs(e.message))}>Download</button>
                 </div>
             ))}
             {view && <Viewer source={view} onClose={() => setView(null)} />}

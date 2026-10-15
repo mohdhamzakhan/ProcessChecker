@@ -115,7 +115,19 @@ public record TaskItem(Guid InstanceId, string Title, string ProcessName,
 public record InstanceDetail(InstanceSummary Summary, Dictionary<string, JsonElement> Data,
     List<StepView> Steps, List<string> Observers, List<string> Requesters);
 
+public class AwayEntity
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public string Email { get; set; } = "";
+    public string DelegateTo { get; set; } = "";
+    public DateTime FromAt { get; set; }
+    public DateTime ToAt { get; set; }
+    public bool Active { get; set; } = true;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
 
+public record DelegateRequest(string? To);
+public record AwayRequest(string? DelegateTo, DateTime? FromAt, DateTime? ToAt, bool? HandOverNow);
 public record ObserversRequest(string[]? Observers);
 public record ReassignRequest(string[]? Assignees);
 public class EngineException : Exception

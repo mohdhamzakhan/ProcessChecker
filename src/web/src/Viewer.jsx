@@ -4,7 +4,9 @@ import Icon from "./designer/Icon";
 
 /** source: { kind: "file", id, name }  or  { kind: "link", instanceId, index, url, label } */
 export default function Viewer({ source, onClose }) {
+    import { useDialogs } from "./Dialogs";
     const isFile = source.kind === "file";
+    const { alert } = useDialogs();
     const [st, setSt] = useState({ loading: true, error: "", blobUrl: "", type: "" });
 
     useEffect(() => {

@@ -2,10 +2,12 @@
 import { api } from "../api";
 import Icon from "../designer/Icon";
 import { ErrorBox, ago, fmt } from "../ui";
+import { useDialogs } from "../Dialogs";
 
 const BADGE = { Sent: "Completed", Failed: "Failed", DryRun: "Cancelled" };
 
 export default function EmailLog() {
+    const { confirm } = useDialogs();
     const [stats, setStats] = useState(null);
     const [data, setData] = useState(null);
     const [status, setStatus] = useState("");
@@ -43,7 +45,8 @@ export default function EmailLog() {
 
     const cleanup = async () => {
         const d = Number(days) || stats?.retentionDays || 90;
-        if (!confirm(`Delete every email older than ${d} days from the log? This cannot be undone.`)) return;
+        if (!(await confirm(`Delete every email older than ${d} days from the log? This cannot be undone.`,
+            { title: "Delete old emails", okLabel: "Delete", danger: true }))) return;
         try {
             const r = await api.post(`/api/notifications/cleanup?days=${d}&failedDays=${d}`);
             setMsg(`Deleted ${r.removed} email(s).`); setError(null); setTick((n) => n + 1);

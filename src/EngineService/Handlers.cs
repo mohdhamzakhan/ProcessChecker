@@ -44,20 +44,22 @@ public class ApprovalHandler : IStepHandler
 {
     private readonly NotificationClient _mail;
     private readonly IdentityResolver _ids;
+    private readonly AwayService _away;
     private readonly IConfiguration _cfg;
     private readonly ILogger<ApprovalHandler> _log;
 
-    public ApprovalHandler(NotificationClient mail, IdentityResolver ids, IConfiguration cfg, ILogger<ApprovalHandler> log)
-    { _mail = mail; _ids = ids; _cfg = cfg; _log = log; }
+    public ApprovalHandler(NotificationClient mail, IdentityResolver ids, AwayService away, IConfiguration cfg, ILogger<ApprovalHandler> log)
+    { _mail = mail; _ids = ids; _away = away; _cfg = cfg; _log = log; }
 
     public string Type => StepTypes.Approval;
 
     public async Task<StepResult> StartAsync(StepContext ctx, CancellationToken ct)
     {
-        var approvers = TaskMailer.Parse(ctx.Def.Approvers.Select(a => ctx.Data.Render(a)));
-        if (approvers.Count == 0)
+        var parsed = TaskMailer.Parse(ctx.Def.Approvers.Select(a => ctx.Data.Render(a)));
+        if (parsed.Count == 0)
             return StepResult.Fail("No approvers could be resolved from the definition/data.");
 
+        var (approvers, awayNotes) = await _away.ApplyAsync(parsed, ct);
         foreach (var a in approvers)
             ctx.Step.Approvals.Add(new StepApproval { StepInstanceId = ctx.Step.Id, Approver = a });
 
@@ -81,7 +83,7 @@ public class ApprovalHandler : IStepHandler
             _log.LogWarning("Approval email failed for {Id}: {Msg}", ctx.Instance.Id, ex.Message);
         }
 
-        return StepResult.Wait(new { approvers, notifyError });
+        return StepResult.Wait(new { approvers, notifyError, away = awayNotes });
     }
 
     public Task<StepResult> ActAsync(StepContext ctx, StepAction a, CancellationToken ct)
@@ -93,7 +95,6 @@ public class ApprovalHandler : IStepHandler
         if (string.IsNullOrEmpty(by))
             throw new EngineException(400, "'by' (your email) is required.");
 
-        // the caller's email, user name and groups: a group approver is decided by any one member
         var who = new HashSet<string>((a.Who ?? Array.Empty<string>()).Select(x => x.ToLowerInvariant())) { by };
 
         if (ctx.Step.Approvals.Any(x => x.DecidedBy == by))
@@ -103,7 +104,7 @@ public class ApprovalHandler : IStepHandler
                   ?? ctx.Step.Approvals.FirstOrDefault(x => x.Decision == null && who.Contains(x.Approver));
         if (row == null)
             throw ctx.Step.Approvals.Any(x => who.Contains(x.Approver))
-                ? new EngineException(409, "This approval has already been given by someone else in your group.")
+                ? new EngineException(409, "This approval has already been given or handed over.")
                 : new EngineException(403, "You are not an approver for this step.");
 
         row.Decision = a.Name == "approve" ? "Approved" : "Rejected";

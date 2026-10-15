@@ -8,6 +8,7 @@ import {
 import Icon from "./Icon";
 import UserPicker from "../UserPicker";
 import { buildLink } from "../links";
+import { useDialogs } from "../Dialogs";
 
 const queryHint = (type) =>
     type === "Json" ? "JSONPath, for example $.requests[?(@.status=='new')]"
@@ -691,6 +692,7 @@ function AttachEditor({ step, steps, index, patch }) {
 }
 
 function LanesEditor({ step, steps, patch, change }) {
+    const { confirm } = useDialogs();
     const lanes = step.lanes || [];
     const add = () => {
         if (lanes.length >= 6) return;
@@ -698,9 +700,10 @@ function LanesEditor({ step, steps, patch, change }) {
         while (lanes.some((l) => l.id === `l${n}`)) n++;
         patch({ lanes: [...lanes, { id: `l${n}`, name: `Path ${lanes.length + 1}` }] });
     };
-    const drop = (l) => {
+    const drop = async (l) => {
         const inside = lanesCount(steps, step.uid, l.id);
-        if (inside && !confirm(`Remove "${l.name}" and the ${inside} step(s) in it?`)) return;
+        if (inside && !(await confirm(`Remove "${l.name}" and the ${inside} step(s) in it?`,
+            { title: "Remove path", okLabel: "Remove", danger: true }))) return;
         change((s) => ({ ...s, steps: removeLane(s.steps, step.uid, l.id) }));
     };
     return (

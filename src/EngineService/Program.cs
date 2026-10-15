@@ -58,6 +58,7 @@ builder.Services.AddScoped<IStepHandler, DataFetchHandler>();
 builder.Services.AddScoped<IStepHandler, LinkHandler>();
 builder.Services.AddScoped<IStepHandler, DecisionHandler>();
 builder.Services.AddScoped<IStepHandler, EndHandler>();
+builder.Services.AddScoped<AwayService>();
 builder.Services.AddScoped<TaskMailer>();
 
 builder.Services.AddScoped<WorkflowEngine>();
@@ -245,6 +246,88 @@ app.MapPost("/api/instances/{id:guid}/steps/{stepKey}/submit",
 app.MapPost("/api/instances/{id:guid}/steps/{stepKey}/upload",
     (HttpContext http, Guid id, string stepKey, ActRequest? r, WorkflowEngine e, EngineDb db, CancellationToken ct) =>
         Act(http, e, db, id, stepKey, "upload", r, ct));
+
+app.MapPost("/api/instances/{id:guid}/steps/{stepKey}/delegate", async (
+    HttpContext http, Guid id, string stepKey, DelegateRequest r, WorkflowEngine engine, EngineDb db, CancellationToken ct) =>
+{
+    if (http.Caller() is not { } by)
+        return Results.Json(new { error = "Sign in first." }, statusCode: 401);
+    if (!await db.CanWorkAsync(http, id, ct))
+        return Results.Json(new { error = "You do not have access to this request." }, statusCode: 403);
+
+    await engine.DelegateAsync(id, stepKey, r.To, by, http.Identities(), ct);
+
+    var inst = await db.Instances.AsNoTracking()
+        .Include(i => i.Steps).ThenInclude(s => s.Approvals).FirstAsync(i => i.Id == id, ct);
+    return Results.Ok(Mapper.ToDetail(inst));
+});
+
+app.MapGet("/api/away", async (HttpContext http, EngineDb db, CancellationToken ct) =>
+{
+    var me = http.Caller();
+    if (me is null) return Results.Json(new { error = "Sign in first." }, statusCode: 401);
+    var a = await db.Away.AsNoTracking().FirstOrDefaultAsync(x => x.Email == me, ct);
+    return Results.Ok(a is null ? null : new { delegateTo = a.DelegateTo, fromAt = a.FromAt, toAt = a.ToAt, active = a.Active });
+});
+
+app.MapPut("/api/away", async (HttpContext http, AwayRequest r, EngineDb db, WorkflowEngine engine, CancellationToken ct) =>
+{
+    var me = http.Caller();
+    if (me is null) return Results.Json(new { error = "Sign in first." }, statusCode: 401);
+
+    var target = TaskMailer.Parse(new[] { r.DelegateTo }).FirstOrDefault();
+    if (target is null) return Results.BadRequest(new { error = "Choose a person: a valid email address or a group." });
+    if (target == me) return Results.BadRequest(new { error = "You cannot choose yourself." });
+    if (r.FromAt is null || r.ToAt is null) return Results.BadRequest(new { error = "Give a start and an end." });
+
+    var from = AsUtc(r.FromAt.Value);
+    var to = AsUtc(r.ToAt.Value);
+    if (to <= from) return Results.BadRequest(new { error = "The end must be after the start." });
+    if (to - from > TimeSpan.FromDays(366)) return Results.BadRequest(new { error = "An absence can last at most one year." });
+
+    var row = await db.Away.FirstOrDefaultAsync(x => x.Email == me, ct);
+    if (row is null) db.Away.Add(row = new AwayEntity { Email = me });
+    row.DelegateTo = target; row.FromAt = from; row.ToAt = to; row.Active = true;
+    await db.SaveChangesAsync(ct);
+
+    var handed = 0;
+    if (r.HandOverNow == true)
+    {
+        var tag = ";" + me + ";";
+        var pairs = new List<(Guid Id, string Key)>();
+        pairs.AddRange((await db.Approvals.AsNoTracking()
+            .Where(a => a.Decision == null && a.Approver == me && a.Step.Status == StepState.InProgress
+                        && a.Step.Instance.Status == InstanceStatus.Running)
+            .Select(a => new { a.Step.InstanceId, a.Step.StepKey }).ToListAsync(ct))
+            .Select(x => (x.InstanceId, x.StepKey)));
+        pairs.AddRange((await db.Steps.AsNoTracking()
+            .Where(s => s.Status == StepState.InProgress && s.Assignees != null && s.Assignees.Contains(tag)
+                        && (s.StepType == StepTypes.Form || s.StepType == StepTypes.Upload)
+                        && s.Instance.Status == InstanceStatus.Running)
+            .Select(s => new { s.InstanceId, s.StepKey }).ToListAsync(ct))
+            .Select(x => (x.InstanceId, x.StepKey)));
+
+        foreach (var (iid, key) in pairs.Distinct())
+        {
+            try { await engine.DelegateAsync(iid, key, target, me, new[] { me }, ct); handed++; }
+            catch (EngineException) { /* that task could not be handed over: skip it */ }
+            db.ChangeTracker.Clear();
+        }
+    }
+    return Results.Ok(new { handedOver = handed });
+});
+
+app.MapDelete("/api/away", async (HttpContext http, EngineDb db, CancellationToken ct) =>
+{
+    var me = http.Caller();
+    if (me is null) return Results.Json(new { error = "Sign in first." }, statusCode: 401);
+    var row = await db.Away.FirstOrDefaultAsync(x => x.Email == me, ct);
+    if (row is not null) { db.Away.Remove(row); await db.SaveChangesAsync(ct); }
+    return Results.NoContent();
+});
+
+static DateTime AsUtc(DateTime d) =>
+    d.Kind == DateTimeKind.Local ? d.ToUniversalTime() : DateTime.SpecifyKind(d, DateTimeKind.Utc);
 
 app.MapPost("/api/instances/{id:guid}/cancel", async (
     HttpContext http, Guid id, EngineDb db, WorkflowEngine engine, CancellationToken ct) =>
@@ -516,4 +599,10 @@ static async Task EnsureObjectsAsync(EngineDb db, System.Data.Common.DbConnectio
                  "UPDATED_AT TIMESTAMP(7) NOT NULL, CONSTRAINT PC_DASHBOARDS_PK PRIMARY KEY (ID))");
     if (!await DbObjects.IndexExistsAsync(conn, "PC_DASH_OWNER_IX"))
         await Do($"CREATE INDEX {s}.PC_DASH_OWNER_IX ON {s}.PC_DASHBOARDS (OWNER_EMAIL)");
+    if (!await DbObjects.TableExistsAsync(conn, "PC_AWAY"))
+        await Do($"CREATE TABLE {s}.PC_AWAY (ID RAW(16) NOT NULL, EMAIL NVARCHAR2(200) NOT NULL, " +
+                 "DELEGATE_TO NVARCHAR2(200) NOT NULL, FROM_AT TIMESTAMP(7) NOT NULL, TO_AT TIMESTAMP(7) NOT NULL, " +
+                 "ACTIVE NUMBER(1) NOT NULL, CREATED_AT TIMESTAMP(7) NOT NULL, CONSTRAINT PC_AWAY_PK PRIMARY KEY (ID))");
+    if (!await DbObjects.IndexExistsAsync(conn, "PC_AWAY_EMAIL_UX"))
+        await Do($"CREATE UNIQUE INDEX {s}.PC_AWAY_EMAIL_UX ON {s}.PC_AWAY (EMAIL)");
 }

@@ -1,19 +1,23 @@
 ﻿using System.Net;
 using System.Net.Mail;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace EngineService;
+
+public record DigestItem(ProcessInstance Inst, StepInstance Step, bool Overdue);
 
 public class TaskMailer
 {
     private static readonly Regex GroupToken = new(@"^group:[a-z0-9_.\- $]{1,64}$", RegexOptions.Compiled);
     private readonly NotificationClient _mail;
     private readonly IdentityResolver _ids;
+    private readonly AwayService _away;
     private readonly IConfiguration _cfg;
     private readonly ILogger<TaskMailer> _log;
 
-    public TaskMailer(NotificationClient mail, IdentityResolver ids, IConfiguration cfg, ILogger<TaskMailer> log)
-    { _mail = mail; _ids = ids; _cfg = cfg; _log = log; }
+    public TaskMailer(NotificationClient mail, IdentityResolver ids, AwayService away, IConfiguration cfg, ILogger<TaskMailer> log)
+    { _mail = mail; _ids = ids; _away = away; _cfg = cfg; _log = log; }
 
     /// Emails and group:name entries. Anything else is dropped.
     public static List<string> Parse(IEnumerable<string?> raw)
@@ -51,13 +55,14 @@ public class TaskMailer
             return StepResult.Wait();
         }
 
-        var list = Parse(ctx.Def.Assignees.Select(a => ctx.Data.Render(a)));
-        if (list.Count == 0)
+        var parsed = Parse(ctx.Def.Assignees.Select(a => ctx.Data.Render(a)));
+        if (parsed.Count == 0)
             return StepResult.Fail("Nobody could be assigned: the assignee fields have no valid email address or group.");
 
+        var (list, awayNotes) = await _away.ApplyAsync(parsed, ct);
         ctx.Step.Assignees = Join(list);
         var mailError = await NotifyAsync(ctx.Instance, ctx.Step, list, ctx.Instance.StartedBy, ct);
-        return StepResult.Wait(new { assignees = list, notifyError = mailError });
+        return StepResult.Wait(new { assignees = list, notifyError = mailError, away = awayNotes });
     }
 
     /// Best effort: a failed email never blocks the request. Returns the error text or null.
@@ -99,25 +104,34 @@ public class TaskMailer
         { _log.LogWarning("Observer email failed for {Id}: {Msg}", inst.Id, ex.Message); }
     }
 
-    /// Returns the mail error, or null when sent (or when nobody could be found, so it is not retried forever).
-    public async Task<string?> SendReminderAsync(ProcessInstance inst, StepInstance step, IEnumerable<string> who,
-        bool overdue, CancellationToken ct)
+    /// One email listing all of a person's waiting tasks. `email` is already an address. Returns the error or null.
+    public async Task<string?> SendDigestAsync(string email, IReadOnlyList<DigestItem> items, CancellationToken ct)
     {
         try
         {
-            var emails = await _ids.ToEmailsAsync(who, ct);
-            if (emails.Count == 0) return null;
-            var body =
-                $"<p>{(overdue ? "This task is <b>overdue</b>." : "This task is still waiting for you.")}</p>" +
-                $"<p><b>{Enc(inst.Title)}</b><br/>Step: {Enc(step.StepName)}" +
-                (step.DueAt == null ? "" : $"<br/>Due: {step.DueAt:yyyy-MM-dd HH:mm} UTC") + "</p>" +
-                $"<p><a href=\"{Link(inst)}\">Open the task</a></p>";
-            await _mail.SendEmailAsync(emails, (overdue ? "Overdue: " : "Reminder: ") + inst.Title, body, true, ct);
+            var ordered = items.OrderByDescending(i => i.Overdue).ThenBy(i => i.Step.DueAt ?? DateTime.MaxValue).ToList();
+            var late = ordered.Count(i => i.Overdue);
+
+            var sb = new StringBuilder();
+            sb.Append($"<p>You have <b>{ordered.Count}</b> task{(ordered.Count == 1 ? "" : "s")} waiting" +
+                      (late > 0 ? $", <b>{late} overdue</b>" : "") + ".</p>");
+            sb.Append("<table cellpadding=\"6\" cellspacing=\"0\" border=\"1\" style=\"border-collapse:collapse\">");
+            sb.Append("<tr><th align=\"left\">Request</th><th align=\"left\">Step</th><th align=\"left\">Due</th></tr>");
+            foreach (var i in ordered)
+            {
+                var due = i.Step.DueAt == null ? "–" : $"{i.Step.DueAt:yyyy-MM-dd HH:mm} UTC" + (i.Overdue ? " <b>(overdue)</b>" : "");
+                sb.Append($"<tr><td><a href=\"{Link(i.Inst)}\">{Enc(i.Inst.Title)}</a></td><td>{Enc(i.Step.StepName)}</td><td>{due}</td></tr>");
+            }
+            sb.Append("</table>");
+
+            var subject = $"Reminder: {ordered.Count} task{(ordered.Count == 1 ? "" : "s")} waiting for you" +
+                          (late > 0 ? $" ({late} overdue)" : "");
+            await _mail.SendEmailAsync(new[] { email }, subject, sb.ToString(), true, ct);
             return null;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _log.LogWarning("Reminder email failed for {Id}: {Msg}", inst.Id, ex.Message);
+            _log.LogWarning("Digest email to {Email} failed: {Msg}", email, ex.Message);
             return ex.Message;
         }
     }
