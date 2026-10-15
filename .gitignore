@@ -489,3 +489,10 @@ $RECYCLE.BIN/
 /src/ConnectorService/appsettings.json
 /src/ApiGateway/appsettings.json
 /src/DocumentService/appsettings.json
+secrets/
+certs/
+backups/
+.env
+keys/
+datafiles/
+/new-secrets.ps1
