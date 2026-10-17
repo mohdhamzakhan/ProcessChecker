@@ -33,7 +33,8 @@ builder.Services.AddHttpClient<DocumentClient>(c =>
     c.DefaultRequestHeaders.Add(InternalAuth.UserHeader, "system@processchecker");
 });
 builder.Services.AddScoped<IStepHandler, ParallelHandler>();
-builder.Services.AddScoped<EventMailer>();
+builder.Services.AddScoped<EventMailer>(); 
+builder.Services.AddSingleton<DisplayTime>();
 builder.Services.AddHostedService<ReminderWorker>();
 builder.Services.AddHttpClient("docs", c => c.Timeout = TimeSpan.FromSeconds(60))
     .ConfigurePrimaryHttpMessageHandler(() =>

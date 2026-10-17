@@ -885,6 +885,26 @@ export function StepProps({ step, index, state, change, connections }) {
                     </>
                 )}
                 {["Form", "Upload", "Approval"].includes(step.type) && <ScheduleEditor step={step} patch={patch} fields={fields} />}
+                {(step.type === "Dispatch" || step.type === "Notify") && (
+                    <div className="sect">
+                        <h5>Look of the email</h5>
+                        <label><span>Style</span>
+                            <select value={step.emailStyle || ""} onChange={(e) => patch({ emailStyle: e.target.value })}>
+                                <option value="">Normal</option>
+                                <option value="success">Good news (green)</option>
+                                <option value="warning">Please note (amber)</option>
+                                <option value="alert">Important (red)</option>
+                            </select></label>
+                        <label><span>Button that opens the request (empty = no button)</span>
+                            <PlaceholderInput value={step.buttonLabel || ""} fields={fields}
+                                onChange={(v) => patch({ buttonLabel: v })} placeholder="Open the request" /></label>
+                        <p className="muted small">
+                            {step.type === "Dispatch"
+                                ? "Suppliers outside the company cannot open the application, so keep the button empty for them."
+                                : "The message you write above appears inside this design, with line breaks and web addresses kept."}
+                        </p>
+                    </div>
+                )}
                 {(step.type === "Dispatch" || step.type === "Notify") &&
                     <AttachEditor step={step} steps={state.steps} index={index} patch={patch} />}
                 {step.type === "Parallel" && <LanesEditor step={step} steps={state.steps} patch={patch} change={change} />}

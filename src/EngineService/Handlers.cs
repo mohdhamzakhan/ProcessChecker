@@ -47,9 +47,11 @@ public class ApprovalHandler : IStepHandler
     private readonly AwayService _away;
     private readonly IConfiguration _cfg;
     private readonly ILogger<ApprovalHandler> _log;
+    private readonly DisplayTime _time;
 
-    public ApprovalHandler(NotificationClient mail, IdentityResolver ids, AwayService away, IConfiguration cfg, ILogger<ApprovalHandler> log)
-    { _mail = mail; _ids = ids; _away = away; _cfg = cfg; _log = log; }
+    public ApprovalHandler(NotificationClient mail, IdentityResolver ids, AwayService away, DisplayTime time,
+        IConfiguration cfg, ILogger<ApprovalHandler> log)
+    { _mail = mail; _ids = ids; _away = away; _time = time; _cfg = cfg; _log = log; }
 
     public string Type => StepTypes.Approval;
 
@@ -69,12 +71,22 @@ public class ApprovalHandler : IStepHandler
             var emails = await _ids.ToEmailsAsync(approvers, ct);
             if (emails.Count > 0)
             {
-                var link = $"{_cfg["Web:BaseUrl"]?.TrimEnd('/')}/instances/{ctx.Instance.Id}";
-                var body =
-                    "<p>Your approval is needed.</p>" +
-                    $"<p><b>{WebUtility.HtmlEncode(ctx.Instance.Title)}</b><br/>Step: {WebUtility.HtmlEncode(ctx.Step.StepName)}</p>" +
-                    $"<p><a href=\"{link}\">Open the request</a></p>";
-                await _mail.SendEmailAsync(emails, $"Approval needed: {ctx.Instance.Title}", body, true, ct);
+                var due = ctx.Def.DueHours is > 0 ? DateTime.UtcNow.AddHours(ctx.Def.DueHours.Value) : (DateTime?)null;
+                var rows = new List<MailDetail> { new("Process", ctx.Instance.ProcessName), new("Step", ctx.Step.StepName) };
+                if (!string.IsNullOrWhiteSpace(ctx.Instance.StartedBy) && ctx.Instance.StartedBy != "system:poll")
+                    rows.Add(new("Requested by", ctx.Instance.StartedBy));
+                if (due != null) rows.Add(new("Please decide by", _time.Format(due)));
+
+                var tpl = new MailTemplate
+                {
+                    Kind = "approval",
+                    Title = ctx.Instance.Title,
+                    Intro = "Your approval is needed on this request.",
+                    Details = rows,
+                    ButtonLabel = "Review and decide",
+                    ButtonUrl = $"{(_cfg["Web:BaseUrl"] ?? "").TrimEnd('/')}/instances/{ctx.Instance.Id}"
+                };
+                await _mail.SendTemplateAsync(emails, $"Approval needed: {ctx.Instance.Title}", tpl, ct);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -82,7 +94,6 @@ public class ApprovalHandler : IStepHandler
             notifyError = ex.Message;      // never block: approvers can still act in the UI
             _log.LogWarning("Approval email failed for {Id}: {Msg}", ctx.Instance.Id, ex.Message);
         }
-
         return StepResult.Wait(new { approvers, notifyError, away = awayNotes });
     }
 
@@ -255,7 +266,11 @@ public abstract class EmailStepHandler : IStepHandler
     { _mail = mail; _docs = docs; _cfg = cfg; }
 
     public abstract string Type { get; }
-    protected abstract string DefaultBody(StepContext ctx);
+    protected abstract string DefaultKind { get; }
+    protected abstract MailTemplate DefaultTemplate(StepContext ctx);   // used when the step has no message of its own
+
+    private string KindOf(string? style) => style switch
+    { "success" => "success", "warning" => "warning", "alert" => "alert", "info" => "info", _ => DefaultKind };
 
     public async Task<StepResult> StartAsync(StepContext ctx, CancellationToken ct)
     {
@@ -265,11 +280,6 @@ public abstract class EmailStepHandler : IStepHandler
 
         var subject = ctx.Data.Render(string.IsNullOrWhiteSpace(ctx.Def.Subject) ? ctx.Def.Name : ctx.Def.Subject);
 
-        string body;
-        bool isHtml;
-        if (string.IsNullOrWhiteSpace(ctx.Def.Body)) { body = DefaultBody(ctx); isHtml = true; }
-        else { body = ctx.Data.Render(ctx.Def.Body); isHtml = false; }
-
         List<MailFile>? files = null;
         if (ctx.Def.AttachFiles)
         {
@@ -278,7 +288,21 @@ public abstract class EmailStepHandler : IStepHandler
             { return StepResult.Fail("Could not attach the files: " + ex.Message); }
         }
 
-        try { await _mail.SendEmailAsync(to, subject, body, isHtml, ct, files); }
+        MailTemplate tpl;
+        if (string.IsNullOrWhiteSpace(ctx.Def.Body))
+            tpl = DefaultTemplate(ctx);
+        else
+            tpl = new MailTemplate { Title = subject, Message = ctx.Data.Render(ctx.Def.Body) };
+        tpl.Kind = KindOf(ctx.Def.EmailStyle);
+
+        if (files is { Count: > 0 }) tpl.Note = "Attached: " + string.Join(", ", files.Select(f => f.FileName));
+        if (!string.IsNullOrWhiteSpace(ctx.Def.ButtonLabel))
+        {
+            tpl.ButtonLabel = ctx.Data.Render(ctx.Def.ButtonLabel);
+            tpl.ButtonUrl = $"{(_cfg["Web:BaseUrl"] ?? "").TrimEnd('/')}/instances/{ctx.Instance.Id}";
+        }
+
+        try { await _mail.SendTemplateAsync(to, subject, tpl, ct, files); }
         catch (Exception ex) when (ex is not OperationCanceledException) { return StepResult.Fail(ex.Message); }
 
         return StepResult.Done(new { to, subject, attached = files?.Select(f => f.FileName).ToList() });
@@ -323,26 +347,29 @@ public class DispatchHandler : EmailStepHandler
 {
     public DispatchHandler(NotificationClient mail, DocumentClient docs, IConfiguration cfg) : base(mail, docs, cfg) { }
     public override string Type => StepTypes.Dispatch;
+    protected override string DefaultKind => "dispatch";
 
-    protected override string DefaultBody(StepContext ctx)
+    protected override MailTemplate DefaultTemplate(StepContext ctx) => new()
     {
-        var sb = new StringBuilder();
-        sb.Append($"<p>Request: <b>{WebUtility.HtmlEncode(ctx.Instance.Title)}</b></p>");
-        sb.Append("<table border=\"1\" cellpadding=\"6\" cellspacing=\"0\">");
-        foreach (var kv in ctx.Data.All.Where(k => !k.Key.Contains('.')).OrderBy(k => k.Key))
-            sb.Append($"<tr><td>{WebUtility.HtmlEncode(kv.Key)}</td><td>{WebUtility.HtmlEncode(DataBag.Text(kv.Value))}</td></tr>");
-        sb.Append("</table>");
-        return sb.ToString();
-    }
+        Title = ctx.Instance.Title,
+        Intro = "Please find the details of this request below.",
+        Details = ctx.Data.All.Where(k => !k.Key.Contains('.'))
+            .OrderBy(k => k.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(k => new MailDetail(k.Key, DataBag.Text(k.Value))).ToList()
+    };
 }
 
 public class NotifyHandler : EmailStepHandler
 {
     public NotifyHandler(NotificationClient mail, DocumentClient docs, IConfiguration cfg) : base(mail, docs, cfg) { }
     public override string Type => StepTypes.Notify;
+    protected override string DefaultKind => "info";
 
-    protected override string DefaultBody(StepContext ctx) =>
-        $"<p>Update on <b>{WebUtility.HtmlEncode(ctx.Instance.Title)}</b>: {WebUtility.HtmlEncode(ctx.Step.StepName)}.</p>";
+    protected override MailTemplate DefaultTemplate(StepContext ctx) => new()
+    {
+        Title = ctx.Instance.Title,
+        Intro = $"Update on this request: {ctx.Step.StepName}."
+    };
 }
 
 // ------------------------------------------------------------ DataFetch

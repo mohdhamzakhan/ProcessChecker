@@ -1,6 +1,4 @@
-﻿using System.Net;
-using System.Net.Mail;
-using System.Text;
+﻿using System.Net.Mail;
 using System.Text.RegularExpressions;
 
 namespace EngineService;
@@ -13,11 +11,13 @@ public class TaskMailer
     private readonly NotificationClient _mail;
     private readonly IdentityResolver _ids;
     private readonly AwayService _away;
+    private readonly DisplayTime _time;
     private readonly IConfiguration _cfg;
     private readonly ILogger<TaskMailer> _log;
 
-    public TaskMailer(NotificationClient mail, IdentityResolver ids, AwayService away, IConfiguration cfg, ILogger<TaskMailer> log)
-    { _mail = mail; _ids = ids; _away = away; _cfg = cfg; _log = log; }
+    public TaskMailer(NotificationClient mail, IdentityResolver ids, AwayService away, DisplayTime time,
+        IConfiguration cfg, ILogger<TaskMailer> log)
+    { _mail = mail; _ids = ids; _away = away; _time = time; _cfg = cfg; _log = log; }
 
     /// Emails and group:name entries. Anything else is dropped.
     public static List<string> Parse(IEnumerable<string?> raw)
@@ -43,8 +43,17 @@ public class TaskMailer
     public static List<string> Split(string? stored) =>
         (stored ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries).ToList();
 
-    private string Link(ProcessInstance inst) => $"{_cfg["Web:BaseUrl"]?.TrimEnd('/')}/instances/{inst.Id}";
-    private static string Enc(string? s) => WebUtility.HtmlEncode(s ?? "");
+    private string Base => (_cfg["Web:BaseUrl"] ?? "").TrimEnd('/');
+    private string Link(ProcessInstance inst) => $"{Base}/instances/{inst.Id}";
+
+    private List<MailDetail> Rows(ProcessInstance inst, StepInstance step, DateTime? due, string? by,
+        string dueLabel = "Due", string byLabel = "Assigned by")
+    {
+        var l = new List<MailDetail> { new("Process", inst.ProcessName), new("Step", step.StepName) };
+        if (due != null) l.Add(new(dueLabel, _time.Format(due)));
+        if (!string.IsNullOrWhiteSpace(by)) l.Add(new(byLabel, by == "system:poll" ? "Started automatically" : by));
+        return l;
+    }
 
     /// Called when a Form or Upload step becomes active.
     public async Task<StepResult> StartAssignedAsync(StepContext ctx, CancellationToken ct)
@@ -61,24 +70,31 @@ public class TaskMailer
 
         var (list, awayNotes) = await _away.ApplyAsync(parsed, ct);
         ctx.Step.Assignees = Join(list);
-        var mailError = await NotifyAsync(ctx.Instance, ctx.Step, list, ctx.Instance.StartedBy, ct);
+
+        // the deadline is saved a moment later, so work it out here for the email
+        var due = ctx.Def.DueHours is > 0 ? DateTime.UtcNow.AddHours(ctx.Def.DueHours.Value) : (DateTime?)null;
+        var mailError = await NotifyAsync(ctx.Instance, ctx.Step, list, ctx.Instance.StartedBy, ct, due);
         return StepResult.Wait(new { assignees = list, notifyError = mailError, away = awayNotes });
     }
 
     /// Best effort: a failed email never blocks the request. Returns the error text or null.
-    public async Task<string?> NotifyAsync(ProcessInstance inst, StepInstance step, IEnumerable<string> to, string? by, CancellationToken ct)
+    public async Task<string?> NotifyAsync(ProcessInstance inst, StepInstance step, IEnumerable<string> to,
+        string? by, CancellationToken ct, DateTime? due = null)
     {
         try
         {
             var emails = await _ids.ToEmailsAsync(to, ct);
             if (emails.Count == 0) return null;
-            var body =
-                "<p>A task has been assigned to you.</p>" +
-                $"<p><b>{Enc(inst.Title)}</b><br/>Step: {Enc(step.StepName)}" +
-                (step.DueAt == null ? "" : $"<br/>Due: {step.DueAt:yyyy-MM-dd HH:mm} UTC") +
-                (string.IsNullOrWhiteSpace(by) ? "" : $"<br/>Assigned by: {Enc(by)}") + "</p>" +
-                $"<p><a href=\"{Link(inst)}\">Open the task</a></p>";
-            await _mail.SendEmailAsync(emails, $"Task assigned: {inst.Title}", body, true, ct);
+            var tpl = new MailTemplate
+            {
+                Kind = "task",
+                Title = inst.Title,
+                Intro = "A task has been assigned to you.",
+                Details = Rows(inst, step, due ?? step.DueAt, by),
+                ButtonLabel = "Open the task",
+                ButtonUrl = Link(inst)
+            };
+            await _mail.SendTemplateAsync(emails, $"Task assigned: {inst.Title}", tpl, ct);
             return null;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -87,53 +103,25 @@ public class TaskMailer
             return ex.Message;
         }
     }
-    public async Task SendEscalationAsync(ProcessInstance inst, StepInstance step, string action,
-    IReadOnlyList<string> targets, IReadOnlyList<string> originals, string? extra, CancellationToken ct)
-    {
-        try
-        {
-            var due = step.DueAt == null ? "" : $"Due: {step.DueAt:yyyy-MM-dd HH:mm} UTC<br/>";
-            var note = string.IsNullOrWhiteSpace(extra) ? "" : $"<p>{Enc(extra)}</p>";
-            var link = $"<p><a href=\"{Link(inst)}\">Open the request</a></p>";
-            var head = $"<p><b>{Enc(inst.Title)}</b><br/>Step: {Enc(step.StepName)}<br/>{due}</p>";
 
-            var toTargets = await _ids.ToEmailsAsync(targets, ct);
-            if (toTargets.Count > 0)
-            {
-                var intro = action == "forward"
-                    ? "A task was not handled by its deadline and has been <b>forwarded to you</b>."
-                    : "A task passed its deadline. You are being told because of the escalation rules.";
-                await _mail.SendEmailAsync(toTargets, $"Escalated: {inst.Title}", $"<p>{intro}</p>{head}{note}{link}", true, ct);
-            }
-
-            var who = originals.ToList();
-            if (!string.IsNullOrWhiteSpace(inst.StartedBy)) who.Add(inst.StartedBy!);
-            var toOthers = (await _ids.ToEmailsAsync(who, ct)).Except(toTargets, StringComparer.OrdinalIgnoreCase).ToList();
-            if (toOthers.Count > 0)
-            {
-                var text = action switch
-                {
-                    "forward" => "A task was not handled by its deadline and has been forwarded to someone else.",
-                    "reject" => "A task was not handled by its deadline, so the request was <b>rejected automatically</b>.",
-                    _ => "A task passed its deadline."
-                };
-                await _mail.SendEmailAsync(toOthers, $"Deadline passed: {inst.Title}", $"<p>{text}</p>{head}{link}", true, ct);
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        { _log.LogWarning("Escalation email failed for {Id}: {Msg}", inst.Id, ex.Message); }
-    }
     public async Task NotifyObserversAsync(ProcessInstance inst, IEnumerable<string> to, string? by, CancellationToken ct)
     {
         try
         {
             var emails = await _ids.ToEmailsAsync(to, ct);
             if (emails.Count == 0) return;
-            var body =
-                "<p>You have been added as an observer. You can follow this request but not act on it.</p>" +
-                $"<p><b>{Enc(inst.Title)}</b>" + (string.IsNullOrWhiteSpace(by) ? "" : $"<br/>Added by: {Enc(by)}") + "</p>" +
-                $"<p><a href=\"{Link(inst)}\">Open the request</a></p>";
-            await _mail.SendEmailAsync(emails, $"You are observing: {inst.Title}", body, true, ct);
+            var rows = new List<MailDetail> { new("Process", inst.ProcessName) };
+            if (!string.IsNullOrWhiteSpace(by)) rows.Add(new("Added by", by == "system:poll" ? "Started automatically" : by));
+            var tpl = new MailTemplate
+            {
+                Kind = "observer",
+                Title = inst.Title,
+                Intro = "You have been added as an observer. You can follow this request, but you cannot act on it.",
+                Details = rows,
+                ButtonLabel = "Open the request",
+                ButtonUrl = Link(inst)
+            };
+            await _mail.SendTemplateAsync(emails, $"You are observing: {inst.Title}", tpl, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         { _log.LogWarning("Observer email failed for {Id}: {Msg}", inst.Id, ex.Message); }
@@ -146,22 +134,25 @@ public class TaskMailer
         {
             var ordered = items.OrderByDescending(i => i.Overdue).ThenBy(i => i.Step.DueAt ?? DateTime.MaxValue).ToList();
             var late = ordered.Count(i => i.Overdue);
+            var n = ordered.Count;
 
-            var sb = new StringBuilder();
-            sb.Append($"<p>You have <b>{ordered.Count}</b> task{(ordered.Count == 1 ? "" : "s")} waiting" +
-                      (late > 0 ? $", <b>{late} overdue</b>" : "") + ".</p>");
-            sb.Append("<table cellpadding=\"6\" cellspacing=\"0\" border=\"1\" style=\"border-collapse:collapse\">");
-            sb.Append("<tr><th align=\"left\">Request</th><th align=\"left\">Step</th><th align=\"left\">Due</th></tr>");
-            foreach (var i in ordered)
+            var tpl = new MailTemplate
             {
-                var due = i.Step.DueAt == null ? "–" : $"{i.Step.DueAt:yyyy-MM-dd HH:mm} UTC" + (i.Overdue ? " <b>(overdue)</b>" : "");
-                sb.Append($"<tr><td><a href=\"{Link(i.Inst)}\">{Enc(i.Inst.Title)}</a></td><td>{Enc(i.Step.StepName)}</td><td>{due}</td></tr>");
-            }
-            sb.Append("</table>");
-
-            var subject = $"Reminder: {ordered.Count} task{(ordered.Count == 1 ? "" : "s")} waiting for you" +
-                          (late > 0 ? $" ({late} overdue)" : "");
-            await _mail.SendEmailAsync(new[] { email }, subject, sb.ToString(), true, ct);
+                Kind = late > 0 ? "overdue" : "reminder",
+                Label = "Your open tasks",
+                Title = $"{n} task{(n == 1 ? "" : "s")} waiting for you",
+                Intro = late > 0 ? $"{late} of them {(late == 1 ? "is" : "are")} overdue." : "Here is what is waiting for you.",
+                Items = ordered.Select(i => new MailItem(
+                    i.Inst.Title,
+                    $"{i.Step.StepName} · {i.Inst.ProcessName}",
+                    i.Step.DueAt == null ? null : "Due " + _time.Format(i.Step.DueAt),
+                    Link(i.Inst),
+                    i.Overdue ? "Overdue" : null)).ToList(),
+                ButtonLabel = "Open My Tasks",
+                ButtonUrl = Base + "/tasks"
+            };
+            await _mail.SendTemplateAsync(new[] { email },
+                $"Reminder: {n} task{(n == 1 ? "" : "s")} waiting for you" + (late > 0 ? $" ({late} overdue)" : ""), tpl, ct);
             return null;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -169,5 +160,54 @@ public class TaskMailer
             _log.LogWarning("Digest email to {Email} failed: {Msg}", email, ex.Message);
             return ex.Message;
         }
+    }
+
+    public async Task SendEscalationAsync(ProcessInstance inst, StepInstance step, string action,
+        IReadOnlyList<string> targets, IReadOnlyList<string> originals, string? extra, CancellationToken ct)
+    {
+        try
+        {
+            var toTargets = await _ids.ToEmailsAsync(targets, ct);
+            if (toTargets.Count > 0)
+            {
+                var tpl = new MailTemplate
+                {
+                    Kind = action == "forward" ? "escalated" : "deadline",
+                    Title = inst.Title,
+                    Intro = action == "forward"
+                        ? "A task was not handled by its deadline and has been forwarded to you."
+                        : "A task passed its deadline. You are being told because of the escalation rules.",
+                    Message = string.IsNullOrWhiteSpace(extra) ? null : extra,
+                    Details = Rows(inst, step, step.DueAt, null, "Was due"),
+                    ButtonLabel = "Open the request",
+                    ButtonUrl = Link(inst)
+                };
+                await _mail.SendTemplateAsync(toTargets, $"Escalated: {inst.Title}", tpl, ct);
+            }
+
+            var who = originals.ToList();
+            if (!string.IsNullOrWhiteSpace(inst.StartedBy)) who.Add(inst.StartedBy!);
+            var toOthers = (await _ids.ToEmailsAsync(who, ct)).Except(toTargets, StringComparer.OrdinalIgnoreCase).ToList();
+            if (toOthers.Count > 0)
+            {
+                var tpl = new MailTemplate
+                {
+                    Kind = action == "reject" ? "rejected" : "deadline",
+                    Title = inst.Title,
+                    Intro = action switch
+                    {
+                        "forward" => "A task was not handled by its deadline and has been forwarded to someone else.",
+                        "reject" => "A task was not handled by its deadline, so the request was rejected automatically.",
+                        _ => "A task passed its deadline."
+                    },
+                    Details = Rows(inst, step, step.DueAt, null, "Was due"),
+                    ButtonLabel = "Open the request",
+                    ButtonUrl = Link(inst)
+                };
+                await _mail.SendTemplateAsync(toOthers, $"Deadline passed: {inst.Title}", tpl, ct);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        { _log.LogWarning("Escalation email failed for {Id}: {Msg}", inst.Id, ex.Message); }
     }
 }

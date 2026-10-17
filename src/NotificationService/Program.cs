@@ -12,6 +12,7 @@ builder.Services.AddHostedService<RetentionWorker>();
 builder.Services.AddDbContext<NotifyDb>(o => o.UseOracle(builder.Configuration.GetConnectionString("Default"),
     x => x.MigrationsHistoryTable(DbMigrator.HistoryTable("NOTIFY"), DbObjects.Schema)));
 builder.Services.AddSingleton(builder.Configuration.GetSection("Smtp").Get<SmtpOptions>() ?? new SmtpOptions());
+builder.Services.AddSingleton(builder.Configuration.GetSection("Email").Get<EmailBrand>() ?? new EmailBrand());
 builder.Services.AddScoped<EmailService>();
 
 builder.Services.AddEndpointsApiExplorer();
@@ -121,18 +122,27 @@ app.MapPost("/api/notifications/{id:guid}/resend", async (Guid id, NotifyDb db, 
         : Results.Ok(new { id = n.Id, status = n.Status });
 });
 // Check your SMTP settings
-app.MapPost("/api/notifications/test", async (TestRequest req, EmailService svc, CancellationToken ct) =>
+app.MapPost("/api/notifications/test", async (TestRequest req, EmailService svc, EmailBrand brand, CancellationToken ct) =>
 {
-    var log = await svc.SendAsync(new EmailRequest(
-        new[] { req.To },
-        "ProcessChecker test email",
-        "<p>If you can read this, NotificationService is configured correctly.</p>",
-        true), ct);
+    var samples = EmailTemplates.Samples(brand);
+    var pick = samples.FirstOrDefault(s => string.Equals(s.Kind, req.Kind ?? "test", StringComparison.OrdinalIgnoreCase));
+    if (pick.T is null) pick = samples.First(s => s.Kind == "test");
 
+    var log = await svc.SendAsync(new EmailRequest(new[] { req.To }, "[Test] " + pick.Subject, null, null, null, pick.T), ct);
     return log.Status == NotifyStatus.Failed
         ? Results.Json(new { id = log.Id, status = log.Status, error = log.Error }, statusCode: 502)
         : Results.Ok(new { id = log.Id, status = log.Status });
 });
+
+app.MapGet("/api/notifications/templates", (EmailBrand brand) =>
+    EmailTemplates.Samples(brand).Select(s => new
+    {
+        kind = s.Kind,
+        label = EmailTemplates.Kinds[s.Kind].Label,
+        color = EmailTemplates.Kinds[s.Kind].Color,
+        subject = s.Subject,
+        html = EmailTemplates.Render(brand, s.Subject, s.T)
+    }));
 app.MapGet("/api/notifications/stats", async (NotifyDb db, IConfiguration cfg, CancellationToken ct) =>
 {
     var by = await db.Notifications.AsNoTracking().GroupBy(x => x.Status)

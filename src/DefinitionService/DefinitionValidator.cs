@@ -108,6 +108,13 @@ public class DefinitionValidator
             if (!AssigneeRegex.IsMatch(a.Trim()))
                 errors.Add(p + ": '" + a + "' is not an email address or a {{field}} placeholder.");
     }
+
+    private static void CheckEmailLook(StepDefinition s, string p, List<string> errors)
+    {
+        if (!string.IsNullOrEmpty(s.EmailStyle) && s.EmailStyle is not ("info" or "success" or "warning" or "alert"))
+            errors.Add($"{p}: the email style must be info, success, warning or alert.");
+        if ((s.ButtonLabel?.Length ?? 0) > 60) errors.Add($"{p}: the button text is too long (60 characters).");
+    }
     public List<string> Validate(ProcessDefinitionDto d)
     {
         var errors = new List<string>();
@@ -178,8 +185,9 @@ public class DefinitionValidator
             CheckRunIf(s, p, errors);
             CheckBranch(s, p, d.Steps, errors);
             CheckNotify(d, errors);
+            CheckEscalation(s, p, errors); 
+            CheckEmailLook(s, p, errors);
             CheckSchedule(s, p, errors);
-            CheckEscalation(s, p, errors);
             switch (s.Type)
             {
                 case StepTypes.Approval:

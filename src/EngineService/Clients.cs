@@ -78,15 +78,41 @@ public class ConnectorClient
 
 public record MailFile(string FileName, string ContentType, byte[] Bytes);
 
+public record MailDetail(string Label, string? Value);
+public record MailItem(string Title, string? Sub = null, string? Meta = null, string? Url = null, string? Badge = null);
+
+public class MailTemplate
+{
+    public string Kind { get; set; } = "info";
+    public string? Label { get; set; }
+    public string? Title { get; set; }
+    public string? Intro { get; set; }
+    public string? Message { get; set; }
+    public List<MailDetail>? Details { get; set; }
+    public List<MailItem>? Items { get; set; }
+    public string? ButtonLabel { get; set; }
+    public string? ButtonUrl { get; set; }
+    public string? Note { get; set; }
+}
+
 public class NotificationClient
 {
     private static readonly JsonSerializerOptions J = new(JsonSerializerDefaults.Web);
     private readonly HttpClient _http;
     public NotificationClient(HttpClient http) => _http = http;
 
-    /// Sends in batches of 40 recipients. `files` are attached to every batch.
-    public async Task SendEmailAsync(IEnumerable<string> to, string subject, string body, bool isHtml,
-        CancellationToken ct, IReadOnlyList<MailFile>? files = null)
+    /// A designed email: the notification service builds the layout from the template.
+    public Task SendTemplateAsync(IEnumerable<string> to, string subject, MailTemplate template,
+        CancellationToken ct, IReadOnlyList<MailFile>? files = null) =>
+        PostAsync(to, new Dictionary<string, object?> { ["subject"] = subject, ["template"] = template }, files, ct);
+
+    /// A plain message (the notification service still puts it into the design).
+    public Task SendEmailAsync(IEnumerable<string> to, string subject, string body, bool isHtml,
+        CancellationToken ct, IReadOnlyList<MailFile>? files = null) =>
+        PostAsync(to, new Dictionary<string, object?> { ["subject"] = subject, ["body"] = body, ["isHtml"] = isHtml }, files, ct);
+
+    private async Task PostAsync(IEnumerable<string> to, Dictionary<string, object?> content,
+        IReadOnlyList<MailFile>? files, CancellationToken ct)
     {
         var all = to.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         if (all.Count == 0) return;
@@ -94,9 +120,10 @@ public class NotificationClient
         var attachments = files?.Select(f => new { fileName = f.FileName, contentType = f.ContentType, base64 = Convert.ToBase64String(f.Bytes) }).ToArray();
         foreach (var chunk in all.Chunk(40))
         {
+            var payload = new Dictionary<string, object?>(content) { ["to"] = chunk, ["attachments"] = attachments };
             try
             {
-                var res = await _http.PostAsJsonAsync("api/notifications/email", new { to = chunk, subject, body, isHtml, attachments }, J, ct);
+                var res = await _http.PostAsJsonAsync("api/notifications/email", payload, J, ct);
                 if (!res.IsSuccessStatusCode)
                     throw new InvalidOperationException(
                         $"NotificationService returned {(int)res.StatusCode}: {await res.Content.ReadAsStringAsync(ct)}");

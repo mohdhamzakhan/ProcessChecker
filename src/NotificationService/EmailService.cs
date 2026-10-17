@@ -10,11 +10,12 @@ public class EmailService
 {
     private readonly NotifyDb _db;
     private readonly SmtpOptions _o;
+    private readonly EmailBrand _brand;
     private readonly ILogger<EmailService> _log;
 
-    public EmailService(NotifyDb db, SmtpOptions options, ILogger<EmailService> log)
+    public EmailService(NotifyDb db, SmtpOptions options, EmailBrand brand, ILogger<EmailService> log)
     {
-        _db = db; _o = options; _log = log;
+        _db = db; _o = options; _brand = brand; _log = log;
     }
 
     public async Task<NotificationLog> SendAsync(EmailRequest r, CancellationToken ct)
@@ -27,19 +28,37 @@ public class EmailService
         if (subject.Length > 300) subject = subject[..300];
 
         var body = r.Body ?? "";
-        if (body.Length == 0) errors.Add("Body is required.");
+        if (r.Template is null && body.Length == 0) errors.Add("Body is required.");
         if (body.Length > 200_000) errors.Add("Body is too large (max 200,000 characters).");
 
         var files = ParseAttachments(r.Attachments, errors);
         if (errors.Count > 0) throw new NotifyException(400, "Email validation failed.", errors);
+
+        string finalBody;
+        bool isHtml;
+        if (r.Template is not null)
+        {
+            finalBody = EmailTemplates.Render(_brand, subject, r.Template);
+            isHtml = true;
+        }
+        else if (_brand.UseLayout)
+        {
+            finalBody = EmailTemplates.Wrap(_brand, subject, body, r.IsHtml ?? false);
+            isHtml = true;
+        }
+        else
+        {
+            finalBody = body;
+            isHtml = r.IsHtml ?? false;
+        }
 
         var names = string.Join("; ", files.Select(f => f.Name));
         var log = new NotificationLog
         {
             ToList = string.Join(";", to),
             Subject = subject,
-            Body = body,
-            IsHtml = r.IsHtml ?? false,
+            Body = finalBody,
+            IsHtml = isHtml,
             AttachmentNames = files.Count == 0 ? null : names.Length > 1000 ? names[..1000] : names
         };
         _db.Notifications.Add(log);
@@ -85,7 +104,13 @@ public class EmailService
         msg.Subject = log.Subject;
 
         var builder = new BodyBuilder();
-        if (log.IsHtml) builder.HtmlBody = log.Body; else builder.TextBody = log.Body;
+        if (log.IsHtml)
+        {
+            builder.HtmlBody = log.Body;
+            builder.TextBody = EmailTemplates.HtmlToText(log.Body);     // the plain-text version
+        }
+        else builder.TextBody = log.Body;
+
         foreach (var f in files ?? Array.Empty<MailPart>())
             builder.Attachments.Add(f.Name, f.Bytes,
                 ContentType.TryParse(f.Type, out var parsed) ? parsed : new ContentType("application", "octet-stream"));

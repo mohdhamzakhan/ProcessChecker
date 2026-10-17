@@ -98,6 +98,8 @@ export function newStep(type, steps) {
         attachFiles: false, attachFrom: [],
         lanes: type === "Parallel" ? [{ id: "l1", name: "Path 1" }, { id: "l2", name: "Path 2" }] : [],
         escOn: false, escN: "", escUnit: "days", escAction: "forward", escTo: [], escMessage: "",
+        emailStyle: "",
+        buttonLabel: "",
     };
     if (type === "Form") st.fields = [newField("text", [])];
     return st;
@@ -256,6 +258,8 @@ export function fromDefinition(def) {
             escTo: e?.to || [], escMessage: e?.message || "",
             attachFiles: !!raw.attachFiles, attachFrom: raw.attachFrom || [],
             lanes: (raw.lanes || []).map((l) => ({ id: l.id, name: l.name })),
+            emailStyle: raw.emailStyle || "",
+            buttonLabel: raw.buttonLabel || "",
         };
     });
     return { ...base, steps, notify: parseNotify(def.notifications) };
@@ -292,6 +296,10 @@ export function toDefinition(s) {
             extra.attachFrom = st.attachFrom || [];
         }
         if (st.type === "Parallel") extra.lanes = (st.lanes || []).map((l) => ({ id: l.id, name: (l.name || "").trim() }));
+        if (st.type === "Dispatch" || st.type === "Notify") {
+            extra.emailStyle = st.emailStyle || undefined;
+            extra.buttonLabel = st.buttonLabel?.trim() || undefined;
+        }
         return { ...out, ...extra };
     });
     def.notifications = buildNotifications(s.notify);

@@ -14,6 +14,7 @@ import Account from "./pages/Account";
 import Login from "./pages/Login";
 import Designer from "./designer/Designer";
 import Icon from "./designer/Icon";
+import EmailTemplates from "./pages/EmailTemplates";
 
 const Item = ({ to, icon, end, children }) => (
     <NavLink to={to} end={end} className="nav"><Icon name={icon} size={18} />{children}</NavLink>
@@ -94,6 +95,7 @@ export default function App() {
                     <Route path="/designer/:key" element={isAdmin ? <Designer /> : <p>Admins only.</p>} />
                     <Route path="/connections" element={isAdmin ? <Connections /> : <p>Admins only.</p>} />
                     <Route path="/users" element={isAdmin ? <Users /> : <p>Admins only.</p>} />
+                    <Route path="/emails/templates" element={isAdmin ? <EmailTemplates /> : <p>Admins only.</p>} />
                     <Route path="/emails" element={isAdmin ? <EmailLog /> : <p>Admins only.</p>} />
                     <Route path="/account" element={<Account />} />
                 </Routes>

@@ -3,6 +3,7 @@ import { api } from "../api";
 import Icon from "../designer/Icon";
 import { ErrorBox, ago, fmt } from "../ui";
 import { useDialogs } from "../Dialogs";
+import { Link } from "react-router-dom";
 
 const BADGE = { Sent: "Completed", Failed: "Failed", DryRun: "Cancelled" };
 
@@ -60,6 +61,7 @@ export default function EmailLog() {
         <>
             <div className="page-head">
                 <div><h2>Email log</h2><p>Every email the system sent, or tried to send.</p></div>
+                <Link to="/emails/templates"><button className="secondary">Preview templates</button></Link>
             </div>
             <ErrorBox error={error} />
             {msg && <div className="okbar" style={{ borderRadius: 10, marginBottom: 14 }}>{msg}</div>}

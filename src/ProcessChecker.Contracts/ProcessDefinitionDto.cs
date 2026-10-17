@@ -96,6 +96,8 @@ public class StepDefinition
     public int? DueHours { get; set; }
     public int? RemindEveryHours { get; set; }
     public EscalationDefinition? Escalation { get; set; }
+    public string? EmailStyle { get; set; }     // info | success | warning | alert
+    public string? ButtonLabel { get; set; }    // e.g. "Open the request"; empty = no button
 }
 
 public class FieldDefinition
