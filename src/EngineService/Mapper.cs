@@ -40,7 +40,8 @@ public static class Mapper
                     ? null
                     : s.Approvals.Select(a => new ApprovalView(a.Approver, a.Decision, a.Note, a.DecidedAt, a.DecidedBy)).ToList(),
                 assigned.Count == 0 ? null : assigned,
-                s.DueAt);
+                s.DueAt,
+                s.EscalatedAt);
         }).ToList();
 
         var data = DataBag.FromJson(i.DataJson).All.ToDictionary(k => k.Key, k => k.Value);

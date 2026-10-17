@@ -87,7 +87,42 @@ public class TaskMailer
             return ex.Message;
         }
     }
+    public async Task SendEscalationAsync(ProcessInstance inst, StepInstance step, string action,
+    IReadOnlyList<string> targets, IReadOnlyList<string> originals, string? extra, CancellationToken ct)
+    {
+        try
+        {
+            var due = step.DueAt == null ? "" : $"Due: {step.DueAt:yyyy-MM-dd HH:mm} UTC<br/>";
+            var note = string.IsNullOrWhiteSpace(extra) ? "" : $"<p>{Enc(extra)}</p>";
+            var link = $"<p><a href=\"{Link(inst)}\">Open the request</a></p>";
+            var head = $"<p><b>{Enc(inst.Title)}</b><br/>Step: {Enc(step.StepName)}<br/>{due}</p>";
 
+            var toTargets = await _ids.ToEmailsAsync(targets, ct);
+            if (toTargets.Count > 0)
+            {
+                var intro = action == "forward"
+                    ? "A task was not handled by its deadline and has been <b>forwarded to you</b>."
+                    : "A task passed its deadline. You are being told because of the escalation rules.";
+                await _mail.SendEmailAsync(toTargets, $"Escalated: {inst.Title}", $"<p>{intro}</p>{head}{note}{link}", true, ct);
+            }
+
+            var who = originals.ToList();
+            if (!string.IsNullOrWhiteSpace(inst.StartedBy)) who.Add(inst.StartedBy!);
+            var toOthers = (await _ids.ToEmailsAsync(who, ct)).Except(toTargets, StringComparer.OrdinalIgnoreCase).ToList();
+            if (toOthers.Count > 0)
+            {
+                var text = action switch
+                {
+                    "forward" => "A task was not handled by its deadline and has been forwarded to someone else.",
+                    "reject" => "A task was not handled by its deadline, so the request was <b>rejected automatically</b>.",
+                    _ => "A task passed its deadline."
+                };
+                await _mail.SendEmailAsync(toOthers, $"Deadline passed: {inst.Title}", $"<p>{text}</p>{head}{link}", true, ct);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        { _log.LogWarning("Escalation email failed for {Id}: {Msg}", inst.Id, ex.Message); }
+    }
     public async Task NotifyObserversAsync(ProcessInstance inst, IEnumerable<string> to, string? by, CancellationToken ct)
     {
         try

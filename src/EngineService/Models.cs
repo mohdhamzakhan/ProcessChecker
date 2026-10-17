@@ -63,6 +63,8 @@ public class StepInstance
     public int? RemindHours { get; set; }
     public DateTime? LastReminderAt { get; set; }
     public int ReminderCount { get; set; }
+    public DateTime? EscalateAt { get; set; }     // when the escalation is due
+    public DateTime? EscalatedAt { get; set; }    // when it ran
 }
 
 public class StepApproval
@@ -103,7 +105,7 @@ public record StepView(
     Guid Id, string Key, string Name, string Type, int Order, string Status,
     string? ActionBy, DateTime? StartedAt, DateTime? CompletedAt, string? Error,
     JsonElement? Output, List<FieldDefinition>? Fields, bool? AllowUpload,
-    List<ApprovalView>? Approvals, List<string>? Assignees, DateTime? DueAt);
+    List<ApprovalView>? Approvals, List<string>? Assignees, DateTime? DueAt, DateTime? EscalatedAt);
 
 public record InstanceSummary(
     Guid Id, string ProcessKey, string ProcessName, int ProcessVersion, string Title,

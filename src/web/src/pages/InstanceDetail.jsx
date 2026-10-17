@@ -16,7 +16,7 @@ function AssignBar({ detail, step, isAdmin, onDone }) {
 
     const isApproval = step.type === "Approval";
     const current = isApproval
-        ? (step.approvals || []).filter((a) => a.decision !== "Delegated").map((a) => a.approver)
+        ? (step.approvals || []).filter((a) => !["Delegated", "Escalated"].includes(a.decision)).map((a) => a.approver)
         : step.assignees || [];
 
     const save = async () => {
@@ -232,6 +232,43 @@ function StepAction({ detail, step, user, ids, isAdmin, isStarter, canWork, onDo
     return null;
 }
 
+/** Testing only (needs Testing:Enabled on the engine): makes a waiting step look older and runs the escalation check. */
+function AgeTool({ detail, onDone }) {
+    const waiting = detail.steps.filter((x) => x.status === "InProgress");
+    const [key, setKey] = useState("");
+    const [hours, setHours] = useState(30);
+    const [msg, setMsg] = useState("");
+    if (waiting.length === 0) return null;
+
+    const run = async (fn, ok) => {
+        setMsg("");
+        try { const r = await fn(); setMsg(ok(r)); onDone(); } catch (e) { setMsg(e.message); }
+    };
+
+    return (
+        <details style={{ marginTop: 14 }}>
+            <summary>Testing tools (admin)</summary>
+            <div className="form" style={{ maxWidth: "none", marginTop: 8 }}>
+                <label><span>Waiting step</span>
+                    <select value={key || waiting[0].key} onChange={(e) => setKey(e.target.value)}>
+                        {waiting.map((w) => <option key={w.key} value={w.key}>{w.name}</option>)}
+                    </select></label>
+                <label><span>Make it older by (hours)</span>
+                    <input type="number" min={1} value={hours} onChange={(e) => setHours(e.target.value)} /></label>
+                <div className="actions">
+                    <button className="secondary" onClick={() => run(
+                        () => api.post(`/api/instances/${detail.summary.id}/steps/${key || waiting[0].key}/age?hours=${hours}`),
+                        () => "Done. Deadlines, reminders and escalation now see this step as older.")}>Make older</button>
+                    <button className="secondary" onClick={() => run(
+                        () => api.post("/api/escalations/run-now"),
+                        (r) => `Escalation check ran: ${r.escalated} step(s) escalated.`)}>Run the escalation check now</button>
+                </div>
+                {msg && <p className="muted small" style={{ margin: 0 }}>{msg}</p>}
+            </div>
+        </details>
+    );
+}
+
 export default function InstanceDetail() {
     const { id } = useParams();
     const { me, user, isAdmin } = useUser();
@@ -354,7 +391,7 @@ export default function InstanceDetail() {
                     isAdmin={isAdmin} isStarter={isStarter} canWork={canWork} onDone={(d) => setDetail(d)} />
             ))}
             {canCancel && <button className="secondary" onClick={cancel}>Cancel request</button>}
-
+            {isAdmin && <AgeTool detail={detail} onDone={load} />}
             <h3>Step history</h3>
             <div className="scroll">
                 <table>
@@ -381,6 +418,7 @@ export default function InstanceDetail() {
                                     )}
                                     {st.assignees && <div><small>Assigned to {st.assignees.join(", ")}</small></div>}
                                     {st.dueAt && st.status === "InProgress" && <div><DueTag dueAt={st.dueAt} /></div>}
+                                    {st.escalatedAt && <div><small>Escalated {fmt(st.escalatedAt)}</small></div>}
                                     {st.error && <div className="ok-err">{st.error}</div>}
                                     {st.type === "Decision" && st.output?.result && (
                                         <div><small>Went the <b>{st.output.result === "then" ? "If true" : "Else"}</b> way. {st.output.reason}</small></div>

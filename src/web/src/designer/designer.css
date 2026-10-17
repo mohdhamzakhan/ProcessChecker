@@ -976,3 +976,112 @@ body.dnd-field .fields .dz {
         background: #e0f2fe;
         color: #075985;
     }
+/* ---- paths join again below the block ---- */
+.lanes {
+    --gap: 14px;
+    position: relative;
+    padding-bottom: 26px;
+}
+
+    .lanes.par {
+        padding-bottom: 26px;
+    }
+
+    .lanes > .lane {
+        position: relative;
+        padding-bottom: 0;
+    }
+
+/* the last arrow of a path runs to the bottom of the path, without an arrowhead */
+.lane > .dz.tail {
+    flex: 1 1 46px;
+    height: auto;
+    min-height: 46px;
+}
+
+    .lane > .dz.tail::before {
+        bottom: 0;
+    }
+
+    .lane > .dz.tail::after {
+        display: none;
+    }
+
+    .lane > .dz.tail .plus {
+        top: 23px;
+    }
+
+body.dnd-step .flow .lane > .dz.tail {
+    height: auto;
+    min-height: 64px;
+}
+
+/* a drop from every path that continues, and one bar that joins them */
+.lanes > .lane:not(.ends)::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: calc(100% - 1px);
+    width: 2px;
+    height: 27px;
+    margin-left: -1px;
+    background: #c3cbe0;
+}
+
+.lanes > .lane::before {
+    content: "";
+    position: absolute;
+    top: calc(100% + 24px);
+    height: 2px;
+    background: #c3cbe0;
+    left: calc(var(--gap) / -2);
+    right: calc(var(--gap) / -2);
+}
+
+.lanes > .lane:first-child::before {
+    left: 50%;
+}
+
+.lanes > .lane:last-child::before {
+    right: 50%;
+}
+
+.lanes > .lane.ends:first-child::before {
+    left: 100%;
+}
+
+.lanes > .lane.ends:last-child::before {
+    right: 100%;
+}
+
+/* the single arrow that leaves the block */
+.merge {
+    width: 2px;
+    height: 8px;
+    margin-top: 0;
+    background: #c3cbe0;
+    align-self: center;
+}
+/* the arrow at the end of a path always runs down to the bottom of the path box */
+.lane > .dz:last-child {
+    flex: 1 1 46px;
+    height: auto;
+    min-height: 46px;
+}
+
+    .lane > .dz:last-child::before {
+        bottom: 0;
+    }
+
+    .lane > .dz:last-child::after {
+        display: none;
+    }
+    /* no arrowhead: the paths join below */
+    .lane > .dz:last-child .plus {
+        top: 23px;
+    }
+
+body.dnd-step .flow .lane > .dz:last-child {
+    height: auto;
+    min-height: 64px;
+}

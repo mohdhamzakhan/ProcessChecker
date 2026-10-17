@@ -12,12 +12,11 @@ export function startDrag(e, mime, payload) {
 export const endDrag = () => document.body.classList.remove("dnd-step", "dnd-field");
 
 const accepts = (e, mime) => Array.from(e.dataTransfer.types || []).includes(mime);
-
-export function DropZone({ mime, onDrop, label = "Drop here", big = false, children }) {
+export function DropZone({ mime, onDrop, label = "Drop here", big = false, className = "", children }) {
     const [over, setOver] = useState(false);
     return (
         <div
-            className={`dz${over ? " over" : ""}${big ? " big" : ""}`}
+            className={`dz${over ? " over" : ""}${big ? " big" : ""}${className ? ` ${className}` : ""}`}
             onDragOver={(e) => {
                 if (accepts(e, mime)) {
                     e.preventDefault();

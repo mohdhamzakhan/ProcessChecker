@@ -97,6 +97,7 @@ export function newStep(type, steps) {
         dueN: "", dueUnit: "days", remN: "", remUnit: "days",
         attachFiles: false, attachFrom: [],
         lanes: type === "Parallel" ? [{ id: "l1", name: "Path 1" }, { id: "l2", name: "Path 2" }] : [],
+        escOn: false, escN: "", escUnit: "days", escAction: "forward", escTo: [], escMessage: "",
     };
     if (type === "Form") st.fields = [newField("text", [])];
     return st;
@@ -246,9 +247,13 @@ export function fromDefinition(def) {
         const b = raw.branch && byKey[raw.branch.of] ? { of: byKey[raw.branch.of], path: raw.branch.path || "then" } : null;
         const d = fromHours(raw.dueHours);
         const r = fromHours(raw.remindEveryHours);
+        const e = raw.escalation;
+        const ea = fromHours(e?.afterHours);
         return {
             ...x, branch: b, condition: normCond(raw.condition),
             dueN: d.n, dueUnit: d.unit, remN: r.n, remUnit: r.unit,
+            escOn: !!e, escN: ea.n, escUnit: ea.unit, escAction: e?.action || "forward",
+            escTo: e?.to || [], escMessage: e?.message || "",
             attachFiles: !!raw.attachFiles, attachFrom: raw.attachFrom || [],
             lanes: (raw.lanes || []).map((l) => ({ id: l.id, name: l.name })),
         };
@@ -273,6 +278,14 @@ export function toDefinition(s) {
         if (["Form", "Upload", "Approval"].includes(st.type)) {
             extra.dueHours = toHours(st.dueN, st.dueUnit);
             extra.remindEveryHours = toHours(st.remN, st.remUnit);
+            if (st.escOn && extra.dueHours) {
+                extra.escalation = {
+                    afterHours: toHours(st.escN, st.escUnit) ?? 0,
+                    action: st.escAction,
+                    to: st.escAction === "reject" ? [] : st.escTo,
+                    message: st.escMessage?.trim() || undefined,
+                };
+            }
         }
         if ((st.type === "Dispatch" || st.type === "Notify") && st.attachFiles) {
             extra.attachFiles = true;
@@ -337,6 +350,13 @@ export function stepIssues(st, all) {
     [["deadline", st.dueN], ["reminder", st.remN]].forEach(([label, v]) => {
         if (String(v ?? "").trim() !== "" && !(Number(v) > 0)) out.push(`The ${label} must be a number greater than 0.`);
     });
+    if (st.escOn) {
+        if (!(Number(st.dueN) > 0)) out.push("Escalation needs a deadline. Set “Due after” first.");
+        if (String(st.escN ?? "").trim() !== "" && !(Number(st.escN) >= 0)) out.push("The escalation time must be a number.");
+        if (st.escAction !== "reject" && (st.escTo || []).length === 0)
+            out.push(st.escAction === "forward" ? "Choose who the task is forwarded to." : "Choose who to tell about the missed deadline.");
+        if ((st.escTo || []).some((a) => !isIdentity(a))) out.push("The escalation people must be emails, groups or {{fields}}.");
+    }
     switch (st.type) {
         case "Form": {
             if (st.fields.length === 0) out.push("Add at least one field.");

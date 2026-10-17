@@ -61,7 +61,27 @@ public class DefinitionValidator
             : owner.Lanes.Any(l => l.Id == b.Path);
         if (!ok) errors.Add($"{p}: it is in a path that does not exist.");
     }
+    private static void CheckEscalation(StepDefinition s, string p, List<string> errors)
+    {
+        var e = s.Escalation;
+        if (e is null) return;
 
+        if (s.Type is not (StepTypes.Form or StepTypes.Upload or StepTypes.Approval))
+        { errors.Add($"{p}: only Form, Upload and Approval steps can escalate."); return; }
+        if (s.DueHours is not > 0) errors.Add($"{p}: escalation needs a deadline (set 'due after' first).");
+        if (e.AfterHours is < 0 or > 8760) errors.Add($"{p}: escalate between 0 hours and 1 year after the deadline.");
+        if (e.Action is not ("forward" or "reject" or "notify"))
+            errors.Add($"{p}: the escalation action must be forward, reject or notify.");
+
+        if (e.Action is "forward" or "notify")
+        {
+            if (e.To.Count == 0) errors.Add($"{p}: escalation needs at least one person.");
+            foreach (var t in e.To)
+                if (!AssigneeRegex.IsMatch(t.Trim()))
+                    errors.Add(p + ": '" + t + "' is not an email address, a group or a {{field}} placeholder.");
+        }
+        if ((e.Message?.Length ?? 0) > 500) errors.Add($"{p}: the escalation message is too long (500 characters).");
+    }
     private static void CheckSchedule(StepDefinition s, string p, List<string> errors)
     {
         if (s.DueHours is { } d && (d < 1 || d > 8760)) errors.Add($"{p}: the deadline must be between 1 hour and 1 year.");
@@ -158,6 +178,8 @@ public class DefinitionValidator
             CheckRunIf(s, p, errors);
             CheckBranch(s, p, d.Steps, errors);
             CheckNotify(d, errors);
+            CheckSchedule(s, p, errors);
+            CheckEscalation(s, p, errors);
             switch (s.Type)
             {
                 case StepTypes.Approval:

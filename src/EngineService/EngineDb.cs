@@ -71,6 +71,8 @@ public class EngineDb : DbContext
             e.Property(x => x.RemindHours).HasColumnName("REMIND_HOURS");
             e.Property(x => x.LastReminderAt).HasColumnName("LAST_REMINDER_AT");
             e.Property(x => x.ReminderCount).HasColumnName("REMINDER_COUNT");
+            e.Property(x => x.EscalateAt).HasColumnName("ESCALATE_AT");
+            e.Property(x => x.EscalatedAt).HasColumnName("ESCALATED_AT");
         });
 
         b.Entity<StepApproval>(e =>

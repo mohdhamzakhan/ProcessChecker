@@ -33,7 +33,7 @@ function summary(st) {
 
 /** The + between two steps; also a drop target. lane = null (main flow) or { of, path }. */
 /** The + between two steps; also a drop target. lane = null (main flow) or { of, path }. */
-function Connector({ id, lane, index, ctx }) {
+function Connector({ id, lane, index, ctx, tail = false }) {
     const open = ctx.menuAt === id;
     const btnRef = useRef(null);
 
@@ -74,7 +74,7 @@ function Connector({ id, lane, index, ctx }) {
     }
 
     return (
-        <DropZone mime={STEP_MIME} label="Drop here" onDrop={(p) => ctx.onDropStep(p, lane, index)}>
+        <DropZone mime={STEP_MIME} label="Drop here" className={tail ? "tail" : ""} onDrop={(p) => ctx.onDropStep(p, lane, index)}>
             <div style={{ display: "flex", justifyContent: "center" }}>
                 <button type="button" ref={btnRef} className={`plus${open ? " open" : ""}`} title="Insert a step here"
                     onClick={(e) => { e.stopPropagation(); ctx.setMenuAt(open ? null : id); }}>
@@ -83,6 +83,59 @@ function Connector({ id, lane, index, ctx }) {
                 {menuPortal}
             </div>
         </DropZone>
+    );
+}
+
+/** True when the step sits somewhere inside a Parallel path (an End there would close the other paths too). */
+const insideParallel = (steps, st) => {
+    let cur = st;
+    for (let g = 0; cur?.branch && g < 20; g++) {
+        cur = steps.find((x) => x.uid === cur.branch.of);
+        if (cur?.type === "Parallel") return true;
+    }
+    return false;
+};
+
+function Lane({ nodes, lane, ctx }) {
+    const key = lane ? `${lane.of}:${lane.path}` : "root";
+    const owner = lane ? ctx.steps.find((x) => x.uid === lane.of) : null;
+    const endsHere = nodes.length > 0 && nodes[nodes.length - 1].step.type === "End";
+    return (
+        <>
+            {nodes.map((n, i) => {
+                const prevNode = i > 0 ? nodes[i - 1] : null;
+                const nextNode = i < nodes.length - 1 ? nodes[i + 1] : null;
+                const isAfterEnd = prevNode && prevNode.step.type === "End";
+                const cannotMoveUp = i === 0 || n.step.type === "End";
+                const cannotMoveDown = i === nodes.length - 1 || (nextNode && nextNode.step.type === "End");
+
+                return (
+                    <Fragment key={n.step.uid}>
+                        {!isAfterEnd && <Connector id={`${key}:${i}`} lane={lane} index={i} ctx={ctx} />}
+                        <NodeView n={n} first={cannotMoveUp} last={cannotMoveDown} ctx={ctx} />
+                    </Fragment>
+                );
+            })}
+
+            {lane && nodes.length === 0 && (
+                <div className="laneempty">
+                    <small className="muted">
+                        {owner?.type === "Parallel"
+                            ? "No steps on this path"
+                            : "Nothing extra here. The request continues with the step below the block."}
+                    </small>
+                    {owner?.type === "Decision" && !insideParallel(ctx.steps, owner) && (
+                        <button type="button" className="secondary" onClick={() => ctx.addStep("End", lane, 0)}>
+                            <Icon name="stop" size={13} />End the request here
+                        </button>
+                    )}
+                </div>
+            )}
+
+            {!endsHere && (
+                <Connector id={`${key}:${nodes.length}`} lane={lane} index={nodes.length} ctx={ctx} tail={!!lane} />
+            )}
+        </>
     );
 }
 
@@ -176,12 +229,16 @@ function NodeView({ n, first, last, ctx }) {
             {card}
             <div className={`lanes${par ? " par" : ""}`}
                 style={par ? { gridTemplateColumns: `repeat(${defs.length}, minmax(240px, 1fr))` } : undefined}>
-                {defs.map((l) => (
-                    <div key={l.id} className={`lane ${par ? "par" : l.id}`}>
-                        <span className="lanehead">{l.name || "Path"}</span>
-                        <Lane nodes={n.lanes[l.id] || []} lane={{ of: st.uid, path: l.id }} ctx={ctx} />
-                    </div>
-                ))}
+                {defs.map((l) => {
+                    const inLane = n.lanes[l.id] || [];
+                    const ends = inLane.length > 0 && inLane[inLane.length - 1].step.type === "End";
+                    return (
+                        <div key={l.id} className={`lane ${par ? "par" : l.id}${ends ? " ends" : ""}`}>
+                            <span className="lanehead">{l.name || "Path"}</span>
+                            <Lane nodes={inLane} lane={{ of: st.uid, path: l.id }} ctx={ctx} />
+                        </div>
+                    );
+                })}
             </div>
             <div className="merge" />
         </>

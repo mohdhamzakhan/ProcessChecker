@@ -642,15 +642,16 @@ function ConditionsEditor({ title, value, fields, steps = [], index = 0, allowOp
     );
 }
 
-function ScheduleEditor({ step, patch }) {
-    const unit = (key, ukey) => (
+function ScheduleEditor({ step, patch, fields }) {
+    const unit = (key, ukey, ph = "none") => (
         <div className="dur">
-            <input type="number" min={1} value={step[key]} placeholder="none" onChange={(e) => patch({ [key]: e.target.value })} />
+            <input type="number" min={0} value={step[key]} placeholder={ph} onChange={(e) => patch({ [key]: e.target.value })} />
             <select value={step[ukey]} onChange={(e) => patch({ [ukey]: e.target.value })}>
                 <option value="hours">hours</option><option value="days">days</option>
             </select>
         </div>
     );
+    const hasDue = Number(step.dueN) > 0;
     return (
         <div className="sect">
             <h5>Deadline and reminders</h5>
@@ -660,6 +661,38 @@ function ScheduleEditor({ step, patch }) {
                 Overdue tasks turn red in My Tasks and Requests. Reminders are emailed while the step is waiting (at most 10).
                 Leave a box empty for none.
             </p>
+
+            <label className="inline">
+                <input type="checkbox" checked={!!step.escOn} disabled={!hasDue}
+                    onChange={(e) => patch({ escOn: e.target.checked })} />
+                Escalate when the deadline is missed
+            </label>
+            {!hasDue && <p className="muted small">Set a deadline first to switch escalation on.</p>}
+
+            {step.escOn && hasDue && (
+                <div className="nrule">
+                    <label><span>Escalate this long after the deadline (empty = at the deadline)</span>
+                        {unit("escN", "escUnit", "at the deadline")}</label>
+                    <label><span>What happens</span>
+                        <select value={step.escAction} onChange={(e) => patch({ escAction: e.target.value })}>
+                            <option value="forward">Forward the task to someone else (for example a manager)</option>
+                            <option value="reject">Reject the request automatically</option>
+                            <option value="notify">Only tell someone</option>
+                        </select></label>
+                    {step.escAction !== "reject" && (
+                        <label><span>{step.escAction === "forward" ? "Forward to" : "Tell"}</span>
+                            <UserPicker value={step.escTo || []} fields={fields} onChange={(escTo) => patch({ escTo })} /></label>
+                    )}
+                    <label><span>Message (optional)</span>
+                        <PlaceholderInput multiline rows={2} value={step.escMessage || ""} fields={fields}
+                            onChange={(v) => patch({ escMessage: v })} /></label>
+                    <p className="muted small">
+                        {step.escAction === "forward" && "The people who had the task are replaced by the people above, and get an email about it. A person who is already on the step is not added again."}
+                        {step.escAction === "reject" && "The request is rejected and closed. Every step still open is skipped, and the “request ended” emails go out."}
+                        {step.escAction === "notify" && "The task stays where it is. The people above get an email."}
+                    </p>
+                </div>
+            )}
         </div>
     );
 }
@@ -851,7 +884,7 @@ export function StepProps({ step, index, state, change, connections }) {
                         </p>
                     </>
                 )}
-                {["Form", "Upload", "Approval"].includes(step.type) && <ScheduleEditor step={step} patch={patch} />}
+                {["Form", "Upload", "Approval"].includes(step.type) && <ScheduleEditor step={step} patch={patch} fields={fields} />}
                 {(step.type === "Dispatch" || step.type === "Notify") &&
                     <AttachEditor step={step} steps={state.steps} index={index} patch={patch} />}
                 {step.type === "Parallel" && <LanesEditor step={step} steps={state.steps} patch={patch} change={change} />}

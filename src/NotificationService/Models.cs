@@ -40,8 +40,10 @@ public class SmtpOptions
 }
 
 public record AttachmentDto(string? FileName, string? ContentType, string? Base64);
-public record EmailRequest(string[]? To, string? Subject, string? Body, bool? IsHtml, List<AttachmentDto>? Attachments = null);
-public record TestRequest(string To);
+public record EmailRequest(string[]? To, string? Subject, string? Body, bool? IsHtml,
+    List<AttachmentDto>? Attachments = null, EmailTemplateDto? Template = null);
+
+public record TestRequest(string To, string? Kind = null);
 
 public class NotifyException : Exception
 {

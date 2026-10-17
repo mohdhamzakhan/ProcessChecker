@@ -58,6 +58,7 @@ builder.Services.AddScoped<IStepHandler, DataFetchHandler>();
 builder.Services.AddScoped<IStepHandler, LinkHandler>();
 builder.Services.AddScoped<IStepHandler, DecisionHandler>();
 builder.Services.AddScoped<IStepHandler, EndHandler>();
+builder.Services.AddHostedService<EscalationWorker>();
 builder.Services.AddScoped<AwayService>();
 builder.Services.AddScoped<TaskMailer>();
 
@@ -563,7 +564,35 @@ app.MapGet("/api/instances/{id:guid}/access", async (
         ? await db.CanWorkAsync(http, id, ct)
         : await db.Visible(http).AnyAsync(i => i.Id == id, ct);
     return ok ? Results.NoContent() : Results.NotFound();
-}); 
+});
+
+app.MapPost("/api/escalations/run-now", async (
+    HttpContext http, IServiceScopeFactory scopes, ILoggerFactory lf, CancellationToken ct) =>
+{
+    if (!http.IsAdmin()) return Results.Json(new { error = "Only an admin can do this." }, statusCode: 403);
+    return Results.Ok(new { escalated = await EscalationRunner.RunOnceAsync(scopes, lf.CreateLogger("Escalation"), ct) });
+});
+
+// Testing only: makes a waiting step look older, so deadlines, reminders and escalation can be tried without waiting.
+// Works only when Testing:Enabled is true.
+app.MapPost("/api/instances/{id:guid}/steps/{stepKey}/age", async (
+    HttpContext http, Guid id, string stepKey, int hours, EngineDb db, IConfiguration cfg, CancellationToken ct) =>
+{
+    if (!cfg.GetValue("Testing:Enabled", false)) return Results.NotFound();
+    if (!http.IsAdmin()) return Results.Json(new { error = "Only an admin can do this." }, statusCode: 403);
+    if (hours is < 1 or > 8760) return Results.BadRequest(new { error = "hours must be between 1 and 8760." });
+
+    var s = await db.Steps.FirstOrDefaultAsync(x => x.InstanceId == id && x.StepKey == stepKey, ct);
+    if (s is null) return Results.NotFound();
+
+    var d = TimeSpan.FromHours(hours);
+    if (s.StartedAt != null) s.StartedAt -= d;
+    if (s.DueAt != null) s.DueAt -= d;
+    if (s.EscalateAt != null) s.EscalateAt -= d;
+    if (s.LastReminderAt != null) s.LastReminderAt -= d;
+    await db.SaveChangesAsync(ct);
+    return Results.Ok(new { s.StartedAt, s.DueAt, s.EscalateAt });
+});
 
 app.Run();
 
@@ -584,6 +613,8 @@ static async Task EnsureObjectsAsync(EngineDb db, System.Data.Common.DbConnectio
     await Col("PC_STEPS", "LAST_REMINDER_AT", "TIMESTAMP(7)");
     await Col("PC_STEPS", "REMINDER_COUNT", "NUMBER(10) DEFAULT 0 NOT NULL");
     await Col("PC_APPROVALS", "DECIDED_BY", "NVARCHAR2(200)");
+    await Col("PC_STEPS", "ESCALATE_AT", "TIMESTAMP(7)");
+    await Col("PC_STEPS", "ESCALATED_AT", "TIMESTAMP(7)");
 
     if (!await DbObjects.TableExistsAsync(conn, "PC_PARTICIPANTS"))
         await Do($"CREATE TABLE {s}.PC_PARTICIPANTS (ID RAW(16) NOT NULL, INSTANCE_ID RAW(16) NOT NULL, " +

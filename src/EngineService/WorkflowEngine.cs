@@ -13,12 +13,13 @@ public class WorkflowEngine
     private readonly Dictionary<string, IStepHandler> _handlers;
     private readonly TaskMailer _tasks;
     private readonly EventMailer _events;
+    private readonly AwayService _away;
     private readonly ILogger<WorkflowEngine> _log;
 
     public WorkflowEngine(EngineDb db, DefinitionClient defs, IEnumerable<IStepHandler> handlers,
-        TaskMailer tasks, EventMailer events, ILogger<WorkflowEngine> log)
+         TaskMailer tasks, EventMailer events, AwayService away, ILogger<WorkflowEngine> log)
     {
-        _db = db; _defs = defs; _tasks = tasks; _events = events; _log = log;
+        _db = db; _defs = defs; _tasks = tasks; _events = events; _away = away; _log = log;
         _handlers = handlers.ToDictionary(h => h.Type);
     }
 
@@ -283,6 +284,11 @@ public class WorkflowEngine
                 // deadline and reminders start counting now; other paths of a Parallel block may start too
                 if (sd.DueHours is > 0) step.DueAt = step.StartedAt!.Value.AddHours(sd.DueHours.Value);
                 step.RemindHours = sd.RemindEveryHours is > 0 ? sd.RemindEveryHours : null;
+                step.EscalatedAt = null;
+                step.EscalateAt = step.DueAt != null && sd.Escalation is { } esc
+                                  && esc.Action is "forward" or "reject" or "notify"
+                    ? step.DueAt.Value.AddHours(Math.Max(0, esc.AfterHours))
+                    : null;
                 continue;
             }
             if (result.Outcome != StepOutcome.Completed) break;     // failed, rejected or ended
@@ -297,6 +303,80 @@ public class WorkflowEngine
         inst.DataJson = data.ToJson();
         inst.Requester = Requesters.Resolve(def, data) ?? inst.Requester;
         await SaveAsync(inst, ct);
+    }
+
+    /// Runs the escalation of one waiting step once its time has come. False when there was nothing to do.
+    public async Task<bool> EscalateAsync(Guid instanceId, string stepKey, CancellationToken ct)
+    {
+        var inst = await LoadAsync(instanceId, ct);
+        var step = inst.Steps.FirstOrDefault(s => s.StepKey == stepKey);
+        var now = DateTime.UtcNow;
+        if (step is null || inst.Status != InstanceStatus.Running || step.Status != StepState.InProgress
+            || step.EscalatedAt != null || step.EscalateAt == null || step.EscalateAt > now)
+            return false;
+
+        var esc = ReadDefinition(inst).Steps.FirstOrDefault(s => s.Key == stepKey)?.Escalation;
+        step.EscalatedAt = now;                          // only once, even if the email below fails
+        if (esc is null) { await SaveAsync(inst, ct); return false; }
+
+        var data = DataBag.FromJson(inst.DataJson);
+        var isApproval = step.StepType == StepTypes.Approval;
+        var originals = isApproval
+            ? step.Approvals.Where(a => a.Decision == null).Select(a => a.Approver).ToList()
+            : TaskMailer.Split(step.Assignees);
+
+        var (targets, _) = await _away.ApplyAsync(TaskMailer.Parse(esc.To.Select(t => data.Render(t))), ct);
+        var action = esc.Action;
+
+        if (action == "forward")
+        {
+            // a person already on the step is not added again; if nobody new is left it becomes a notice
+            var fresh = isApproval
+                ? targets.Where(t => !step.Approvals.Any(a => a.Approver == t)).ToList()
+                : targets.Where(t => !originals.Contains(t)).ToList();
+
+            if (fresh.Count == 0) action = "notify";
+            else
+            {
+                targets = fresh;
+                if (isApproval)
+                {
+                    foreach (var a in step.Approvals.Where(a => a.Decision == null).ToList())
+                    {
+                        a.Decision = "Escalated";
+                        a.DecidedAt = now;
+                        a.Note = "Escalated to " + string.Join(", ", fresh);
+                    }
+                    foreach (var t in fresh)
+                        step.Approvals.Add(new StepApproval { StepInstanceId = step.Id, Approver = t });
+                }
+                else step.Assignees = TaskMailer.Join(fresh);
+            }
+        }
+        else if (action == "reject")
+        {
+            foreach (var a in step.Approvals.Where(a => a.Decision == null).ToList())
+            {
+                a.Decision = "Expired";
+                a.DecidedAt = now;
+                a.Note = "No answer by the deadline";
+            }
+            step.ActionBy = "system:escalation";
+            var reason = string.IsNullOrWhiteSpace(esc.Message)
+                ? "No answer by the deadline, so the request was rejected automatically."
+                : data.Render(esc.Message);
+            data.Set($"{step.StepKey}.decision", "Expired");
+            inst.DataJson = data.ToJson();
+            Apply(inst, step, StepResult.Reject(new { escalated = true, action = "reject", reason }));
+        }
+        // "notify": nothing changes on the step
+
+        await SaveAsync(inst, ct);
+
+        var extra = string.IsNullOrWhiteSpace(esc.Message) ? null : data.Render(esc.Message);
+        await _tasks.SendEscalationAsync(inst, step, action, targets, originals, extra, ct);
+        if (action == "reject") await AfterAsync(inst, ct);
+        return true;
     }
 
     /// null = the step may run. Otherwise why it is skipped: a path that was not taken, or a skipped block.

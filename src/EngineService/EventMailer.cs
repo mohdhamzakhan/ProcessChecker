@@ -79,7 +79,8 @@ public class EventMailer
     {
         foreach (var s in inst.Steps.OrderByDescending(x => x.OrderNo))
         {
-            if (s.StepType == StepTypes.End && s.Status == StepState.Completed && !string.IsNullOrEmpty(s.OutputJson))
+            if (!string.IsNullOrEmpty(s.OutputJson)
+                && (s.Status == StepState.Rejected || (s.StepType == StepTypes.End && s.Status == StepState.Completed)))
             {
                 try
                 {
